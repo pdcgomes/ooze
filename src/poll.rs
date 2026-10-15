@@ -454,7 +454,7 @@ fn fetch_health(hub: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     }
     let mut busiest: Vec<(&String, u64)> =
         h.requests.iter().map(|(p, v)| (p, v.iter().sum())).filter(|(_, n)| *n > 0).collect();
-    busiest.sort_by(|a, b| b.1.cmp(&a.1));
+    busiest.sort_by_key(|a| std::cmp::Reverse(a.1));
     *hub.shared.active.lock().unwrap() = busiest.into_iter().take(10).map(|(p, _)| p.clone()).collect();
     Ok(Msg::Health(h))
 }
@@ -543,7 +543,7 @@ fn fetch_detail(api: &Api, team: &str, project: &str) -> Result<Detail, ApiError
             .map(|p| (p.group(by).to_string(), p.value.max(0.0) as u64))
             .collect();
         v.retain(|(k, n)| !k.is_empty() && *n > 0);
-        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.sort_by_key(|a| std::cmp::Reverse(a.1));
         Ok(v)
     };
     let n = now();

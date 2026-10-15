@@ -452,7 +452,7 @@ impl World {
     }
 
     fn take_deployments(&mut self, mut list: Vec<Deployment>, now: i64) {
-        list.sort_by(|a, b| b.created.cmp(&a.created));
+        list.sort_by_key(|a| std::cmp::Reverse(a.created));
         let seeding = !self.seeded;
         self.seeded = true;
         let mut lines = vec![];
