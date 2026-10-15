@@ -21,8 +21,13 @@ pub enum ApiError {
     /// The token can't do this.
     Forbidden(String),
     NotFound(String),
-    /// Rate limited until this time, in milliseconds.
-    Limited(i64),
+    /// Rate limited until this time, in milliseconds, and what Vercel said.
+    Limited(i64, String),
+    /// The team's daily cap on observability queries is reached: every ooze
+    /// waits until this time before one asks again.
+    Capped(i64, String),
+    /// ooze's own daily budget of observability queries is spent until this time.
+    Budget(i64),
     Status(u16, String),
     Network(String),
     Decode(String),
@@ -34,9 +39,23 @@ impl std::fmt::Display for ApiError {
             ApiError::Unauthorized(why) => write!(f, "Vercel refused the token ({why})"),
             ApiError::Forbidden(why) => write!(f, "not allowed: {why}"),
             ApiError::NotFound(why) => write!(f, "not found: {why}"),
-            ApiError::Limited(until) => {
+            ApiError::Limited(until, why) => {
                 let wait = (until - chrono::Utc::now().timestamp_millis()).max(0) / 1000;
-                write!(f, "rate limited for {wait} s more")
+                if why.is_empty() {
+                    write!(f, "rate limited for {wait} s more")
+                } else {
+                    write!(f, "rate limited for {wait} s more: {why}")
+                }
+            }
+            ApiError::Capped(until, _) => {
+                write!(
+                    f,
+                    "Vercel's daily limit on this team's observability queries is reached; trying again at {}",
+                    crate::fmt::time(*until)
+                )
+            }
+            ApiError::Budget(until) => {
+                write!(f, "ooze's daily budget of observability queries is spent; more at {}", crate::fmt::time(*until))
             }
             ApiError::Status(code, why) => write!(f, "Vercel answered {code}: {why}"),
             ApiError::Network(why) => write!(f, "can't reach Vercel: {why}"),
@@ -108,17 +127,6 @@ impl Api {
 
     pub fn limits(&self) -> BTreeMap<String, Limit> {
         self.limits.lock().unwrap().clone()
-    }
-
-    /// How long to wait before the next request of this kind, when its limit
-    /// is running low: what's left spread evenly until it fills up again.
-    pub fn pace(&self, path: &str) -> Option<Duration> {
-        let limit = *self.limits.lock().unwrap().get(&bucket(path))?;
-        let now = chrono::Utc::now().timestamp_millis();
-        if limit.reset <= now || limit.remaining * 5 > limit.limit {
-            return None;
-        }
-        Some(Duration::from_millis(((limit.reset - now) / (limit.remaining as i64 + 1)) as u64))
     }
 
     fn call(
@@ -210,13 +218,13 @@ impl Api {
             403 => ApiError::Forbidden(why),
             404 => ApiError::NotFound(why),
             429 => {
+                // Vercel says when to try again, or its per-minute count has run out
+                // and fills again at its reset. A 429 with that count not run out
+                // comes from some other limit, so it's tried again sooner.
                 let now = chrono::Utc::now().timestamp_millis();
-                let until = limit
-                    .map(|l| l.reset)
-                    .filter(|r| *r > now)
-                    .or(retry.map(|s| now + s * 1000))
-                    .unwrap_or(now + 60_000);
-                ApiError::Limited(until)
+                let spent = limit.filter(|l| l.remaining == 0 && l.reset > now).map(|l| l.reset);
+                let until = retry.map(|s| now + s * 1000).or(spent).unwrap_or(now + 20_000);
+                ApiError::Limited(until, said(&text).unwrap_or_default())
             }
             _ => ApiError::Status(status, why),
         })
@@ -271,12 +279,16 @@ fn read_json<T: DeserializeOwned>(resp: &mut ureq::http::Response<ureq::Body>) -
     serde_json::from_str(text).map_err(|e| ApiError::Decode(e.to_string()))
 }
 
-/// Vercel's errors say `{"error": {"code": …, "message": …}}`.
+/// What an error said in words: Vercel's say `{"error": {"code": …, "message": …}}`.
+fn said(text: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let m = v["error"]["message"].as_str().or(v["message"].as_str()).or(v["error"].as_str())?;
+    Some(m.trim_end_matches('.').to_string())
+}
+
 fn message(text: &str, status: u16) -> String {
-    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-    let said = v["error"]["message"].as_str().or(v["message"].as_str()).or(v["error"].as_str());
-    match said {
-        Some(m) => m.trim_end_matches('.').to_string(),
+    match said(text) {
+        Some(m) => m,
         None if !text.trim().is_empty() && text.len() < 200 => text.trim().to_string(),
         None => format!("HTTP {status}"),
     }
@@ -396,9 +408,8 @@ pub mod tests {
         let e = api.get::<Value>("/v1/billing/charges", &[]).unwrap_err();
         assert_eq!(e, ApiError::Forbidden("You don't have permission to view billing".into()));
         let e = api.post::<Value>("/v2/observability/query", &[], &serde_json::json!({})).unwrap_err();
-        assert_eq!(e, ApiError::Limited(reset * 1000));
-        assert!(api.pace("/v2/observability/query").is_some(), "with nothing left, it waits");
-        assert!(api.pace("/v7/deployments").is_none());
+        assert_eq!(e, ApiError::Limited(reset * 1000, String::new()), "with nothing left, until the count fills again");
+        assert_eq!(api.limits()["v2/observability"].remaining, 0, "what the limit said is kept");
         let e = api.get::<Value>("/v2/user", &[]).unwrap_err();
         assert_eq!(e.to_string(), "Vercel refused the token (Not authorized)");
     }

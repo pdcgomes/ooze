@@ -140,20 +140,6 @@ pub fn day(at: i64) -> String {
         .unwrap_or_default()
 }
 
-/// This machine's time zone as an IANA name, such as "Europe/London", for
-/// asking Vercel for days that start at local midnight.
-pub fn local_timezone() -> Option<String> {
-    if let Ok(tz) = std::env::var("TZ") {
-        let tz = tz.trim_start_matches(':');
-        if tz.contains('/') {
-            return Some(tz.to_string());
-        }
-    }
-    let target = std::fs::read_link("/etc/localtime").ok()?;
-    let s = target.to_string_lossy();
-    s.split_once("zoneinfo/").map(|(_, name)| name.to_string())
-}
-
 /// Shortens from the end, for names whose start matters.
 pub fn fit_end(s: &str, w: usize) -> String {
     if s.chars().count() <= w {

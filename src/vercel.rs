@@ -606,11 +606,58 @@ pub fn status_page() -> Result<StatusPage> {
     crate::api::public(STATUS_PAGE)
 }
 
-/// Page views and visitors from Web Analytics, over whole UTC days.
+/// Page views and visitors from Web Analytics, over whole UTC days: `until`'s
+/// day is left out, so today is from its midnight to tomorrow's.
 pub fn analytics_count(api: &Api, project: &str, since: i64, until: i64) -> Result<(u64, u64)> {
     let q = [("projectId", project.to_string()), ("since", since.to_string()), ("until", until.to_string())];
     let v: Value = api.get("/v1/query/web-analytics/visits/count", &q)?;
     Ok((v["data"]["pageviews"].as_f64().unwrap_or(0.0) as u64, v["data"]["visitors"].as_f64().unwrap_or(0.0) as u64))
+}
+
+fn aggregate(api: &Api, project: &str, by: &str, since: i64, until: i64, limit: Option<u32>) -> Result<Vec<Value>> {
+    let mut q = vec![
+        ("projectId", project.to_string()),
+        ("by", by.to_string()),
+        ("since", since.to_string()),
+        ("until", until.to_string()),
+    ];
+    if let Some(n) = limit {
+        q.push(("limit", n.to_string()));
+    }
+    let v: Value = api.get("/v1/query/web-analytics/visits/aggregate", &q)?;
+    Ok(v["data"].as_array().cloned().unwrap_or_default())
+}
+
+fn whole(v: &Value) -> u64 {
+    v.as_f64().unwrap_or(0.0).max(0.0) as u64
+}
+
+/// Page views and visitors from Web Analytics each hour (`by` "hour") or day,
+/// as (start, page views, visitors). Vercel adds `until`'s own bucket too.
+pub fn analytics_series(api: &Api, project: &str, by: &str, since: i64, until: i64) -> Result<Vec<(i64, u64, u64)>> {
+    Ok(aggregate(api, project, by, since, until, None)?
+        .iter()
+        .filter_map(|b| Some((parse_time(b["timestamp"].as_str()?)?, whole(&b["pageviews"]), whole(&b["visitors"]))))
+        .collect())
+}
+
+/// The most viewed values of `by`, such as `requestPath`, `referrerHostname`
+/// or `country`, with their page views.
+pub fn analytics_top(
+    api: &Api,
+    project: &str,
+    by: &str,
+    since: i64,
+    until: i64,
+    limit: u32,
+) -> Result<Vec<(String, u64)>> {
+    let mut v: Vec<(String, u64)> = aggregate(api, project, by, since, until, Some(limit))?
+        .iter()
+        .filter_map(|b| Some((b[by].as_str()?.to_string(), whole(&b["pageviews"]))))
+        .filter(|(k, n)| !k.is_empty() && k != "Others" && *n > 0)
+        .collect();
+    v.sort_by_key(|r| std::cmp::Reverse(r.1));
+    Ok(v)
 }
 
 /// The billing charges between two times, a row at a time.

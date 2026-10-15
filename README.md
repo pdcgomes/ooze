@@ -33,17 +33,23 @@ It watches the team `--team` names, else `team` in the settings, else the Vercel
 - **The header:** who's online across every project, page views a minute, today's visitors and page views, builds running, production failures today, and spend against the plan's credit. The lights are Vercel's status page and the API. Its border turns orange when something needs you, such as a failed production deploy, an error spike, an attack or an incident, and red when Vercel can't be reached.
 - **Projects,** busiest first: who's online, page views a minute for the last 30 minutes, page views in the last hour, visitors today, the share of requests answered with a 5xx in the last 15 minutes, cache hits, and the production deployment: building, failed or ready, with requests the firewall challenged or denied. Projects without Web Analytics show requests instead of page views. Quiet ones fold into one line, which `a` opens.
 - **Deployments:** building and queued ones first, then the newest across every project, each with its environment, branch, commit message and author. A failed one says why. `live` marks the one serving production, which ooze works out from the last promote or roll back as well as the newest ready deployment.
-- **Billing:** the period, metered usage against the plan's included credit, where it's heading by the period's end, the costliest services, AI Gateway's spend today or its budget, and what the plan and seats cost a month.
+- **Billing:** the period, metered usage against the plan's included credit, where it's heading by the period's end, the costliest services, AI Gateway's spend this period or its budget, and what the plan and seats cost a month.
 - **The feed:** deploys starting, finishing and failing; traffic and error spikes; attacks the firewall is mitigating; Vercel's anomaly alerts; your team's activity, such as environment variables changed and domains added; status-page incidents; domains expiring or misconfigured; usage passing the credit; and what you did from ooze.
 - **The Slime** sits beside the billing figures, glows when something happens, blinks now and then, and sleeps when Vercel can't be reached.
 
-"Online" is unique visitors in the last 5 minutes. Page views and visitors come from Vercel's Observability API in one-minute buckets, about a minute behind, and refresh every 10 seconds.
+"Online" is unique visitors in the last 5 minutes. Who's online and page views a minute come from Vercel's Observability API in one-minute buckets, about a minute behind, and refresh every 2 minutes. Today's visitors and page views count from midnight UTC, as Vercel's Web Analytics does.
+
+### Vercel's daily limit
+
+Vercel limits how many observability queries a team can make in a day, and doesn't say how many. Once a team reaches the limit, Vercel answers none of them until the next day. So ooze keeps to a budget of its own: at most 600 queries in any 24 hours (`daily_queries`), counted across every ooze on the machine. Two oozes share each answer rather than both asking. Once half the budget is spent, the live numbers refresh half as often, and a quarter as often past three quarters, so it lasts the day.
+
+If the budget runs out, or Vercel's limit is reached anyway, the header says so and when ooze will try again. Who's online shows as –, and the projects show page views each hour of the last 24 from the Web Analytics API instead, which the limit doesn't cover. `ooze status` says how much of the budget is spent.
 
 ## Details
 
-⏎ opens what's selected. A project's details have where its visitors came from in the last hour (pages, referrers, countries), its 5xx by route, its visitors over 7 and 30 days, and its recent deployments.
+⏎ opens what's selected. A project's details have where its visitors came from in the last 24 hours (pages, referrers, countries), its 5xx by route in the last hour when it has had some, its visitors over 7 and 30 days, and its recent deployments.
 
-![A project's details: who's online, today, 7 and 30 days, its errors and cache, and its pages, referrers and countries in the last hour](docs/screenshots/project.png)
+![A project's details: who's online, today, 7 and 30 days, its errors and cache, and its pages, referrers and countries in the last 24 hours](docs/screenshots/project.png)
 
 A deployment's details have its commit, its URL, the actions that apply to it, and its build log, which follows a running build line by line.
 
@@ -106,7 +112,7 @@ ooze agent uninstall
 | `p` | pause the feed, or carry on |
 | `a` | show the quiet projects too |
 | `z` | the selected panel on its own |
-| `r` | ask Vercel for everything again now |
+| `r` | ask Vercel again now; the live numbers keep to their own clock, for the budget |
 | `t` | watch your next team |
 | `?` | the keys |
 | `q` | quit |
@@ -118,8 +124,10 @@ The mouse picks a panel and scrolls it. Below 120 columns the billing panel fold
 ```sh
 ooze --once     # one glance as text: what an agent can run to see what's happening
 ooze --json     # the same as JSON
-ooze status     # who ooze is signed in as, how, which team, and the rate limits left
+ooze status     # who ooze is signed in as, how, which team, the day's query budget, and the rate limits left
 ```
+
+`--once` uses live numbers any ooze fetched in the last 5 minutes as they are, so running it often costs no more queries.
 
 ## Settings
 
@@ -128,7 +136,8 @@ ooze writes `~/.config/ooze/config.toml`, with comments, the first time it runs,
 ```toml
 team = ""            # the team to watch, by slug; empty for the CLI's current one or your only one
 read_only = false    # turns the actions off
-refresh = 10         # seconds between refreshes of the live numbers
+refresh = 120        # seconds between refreshes of the live numbers, 60 at the least
+daily_queries = 600  # the most observability queries in any 24 hours, across every ooze here
 quiet_below = 1      # projects with fewer page views than this in the last hour fold away
 
 [notify]
@@ -156,17 +165,20 @@ A thread fetches each source on its own clock and the view folds in what each sa
 
 | What | From | How often |
 |---|---|---|
-| Who's online, page views a minute | Vercel's Observability API: Web Analytics page views, summed and counted by visitor, for the whole team at once | 10 s |
-| Requests, 5xx, cache hits, firewall | The same API: requests by status and cache result, firewall actions | 30 s |
-| Today's visitors and page views | The same, in one bucket from local midnight | 5 min |
+| Who's online, page views a minute | Vercel's Observability API: Web Analytics page views, summed and counted by visitor, for the whole team at once; 2 queries | 2 min |
+| Requests and 5xx | The same API: requests by project and status; 1 query | 10 min |
+| Cache hits, firewall | The same API: requests by cache result, firewall actions; 2 queries | 30 min |
+| Today's visitors and page views, page views by the hour | The Web Analytics API, for each project that has it | 15 min |
 | Deployments | `/v7/deployments`, every project at once | 5 s while one builds, 15 s otherwise |
 | Projects | `/v10/projects`: Web Analytics on or off, production, the last promote or roll back | 5 min |
-| Spend | `/v1/billing/charges`, FOCUS rows a day at a time, and the team's plan and credit | 30 min |
-| Activity, alerts, attacks | `/v3/events`, Vercel's anomaly alerts, the firewall's attack status | 1 to 2 min |
+| Spend, AI Gateway | `/v1/billing/charges`, FOCUS rows a day at a time, the team's plan and credit, and AI Gateway's budgets | 30 min |
+| Activity, alerts, attacks | `/v3/events`, Vercel's anomaly alerts, the firewall's attack status | 1 to 5 min |
 | Domains | `/v5/domains` and each domain's DNS configuration | hourly |
 | Vercel's status | `vercel-status.com` | 2 min |
 
-A project's details ask for its pages, referrers and countries when opened, and a deployment's details stream its build log. It reads Vercel's rate limits from each answer and slows down when one runs low, and waits longer after each failure. Steady, it makes about 20 observability queries a minute, of the 100 Vercel allows. Requests go through the proxy `HTTPS_PROXY` names, if any.
+A project's details ask the Web Analytics API for its pages, referrers and countries when opened, and the Observability API for its 5xx by route if it has had any. A deployment's details stream its build log.
+
+Observability queries keep to the daily budget. The open view starts at about 70 an hour and slows to under 20, so left open all day it doesn't run out. `ooze watch` asks for the live numbers and requests every 30 minutes, 6 queries an hour, and none while the view's answers are fresh. ooze waits until a rate limit lifts, and longer after each failure. Requests go through the proxy `HTTPS_PROXY` names, if any.
 
 **What it costs:** it draws when something changes, ten times a second while something moves on screen, and once a second otherwise. Over a minute watching a team with 16 projects it used 0.2% of one core and 24 MB of memory; the demo, which moves more, used 0.6% (15 October 2026).
 

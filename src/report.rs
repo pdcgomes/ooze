@@ -2,6 +2,7 @@
 //! happening on Vercel, and `--json`, the same as JSON.
 
 use crate::actions::short;
+use crate::api::ApiError;
 use crate::billing;
 use crate::fmt;
 use crate::model::{Row, Source, World};
@@ -40,21 +41,34 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
         .map(|t| format!("{}{}", t.title(), t.plan().map(|pl| format!(" ({})", capitalised(pl))).unwrap_or_default()));
     line(format!("{} · {} · {}", p.bold("ooze"), team.unwrap_or_else(|| "no team".into()), fmt::when(now, now)));
     let g = w.glance(now);
+    let online = match g.online {
+        Some(n) => p.fg(hex::TEAL, format!("{} now", fmt::num(n))),
+        None => p.fg(hex::COMMENT, "not known"),
+    };
     line(format!(
-        "{}{} · today {} · {}",
+        "{}{online} · today {} · {} (since midnight UTC)",
         label("online"),
-        p.fg(hex::TEAL, format!("{} now", fmt::num(g.online))),
         fmt::count(g.visitors, "visitor", "visitors"),
         fmt::count(g.views, "page view", "page views")
     ));
+    if let Some((why, until)) = w.paused(now) {
+        line(format!(
+            "{}{}",
+            label("live"),
+            p.fg(hex::ORANGE, format!("paused till {}: {why}", fmt::when(until, now)))
+        ));
+    }
     let (rows, folded) = w.rows(now, false);
     line(label("projects").trim_end().to_string());
     let name_w = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(8).min(24);
     for r in &rows {
         let mut parts = vec![];
         if r.analytics {
-            parts.push(format!("{} online", r.online));
-            parts.push(format!("{} views/h", fmt::compact(r.hour)));
+            if let Some(n) = r.online {
+                parts.push(format!("{n} online"));
+            }
+            let hour = if r.hourly { "views in the last whole hour" } else { "views/h" };
+            parts.push(format!("{} {hour}", fmt::compact(r.hour)));
             if let Some(t) = r.today {
                 parts.push(format!("{} today", fmt::compact(t)));
             }
@@ -141,13 +155,8 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
     } else if let Some((_, e)) = w.failed.get(&Source::Billing) {
         line(format!("{}{e}", label("spend")));
     }
-    if let Some(ai) = &w.ai.as_ref().filter(|a| a.requests_today > 0) {
-        line(format!(
-            "{}{} today · {}",
-            label("AI"),
-            fmt::money(ai.cost_today),
-            fmt::count(ai.requests_today, "request", "requests")
-        ));
+    if let Some(ai) = w.spend.as_ref().map(|s| s.ai_gateway()).filter(|c| *c > 0.0) {
+        line(format!("{}AI Gateway {} this period", label("AI"), fmt::money(ai)));
     }
     if let Some(s) = &w.status {
         let said = if s.incidents.is_empty() {
@@ -174,7 +183,8 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
         line(format!("{}{}", label("domains"), warned.join(" · ")));
     }
     for (source, (_, e)) in &w.failed {
-        if *source != Source::Billing {
+        // A pause is said once, above.
+        if *source != Source::Billing && !matches!(e, ApiError::Capped(..) | ApiError::Budget(_)) {
             line(format!("{}{}: {e}", label("couldn't"), source.name()));
         }
     }
@@ -194,7 +204,8 @@ pub fn json(w: &World, now: i64) -> Value {
         .map(|r| {
             json!({
                 "id": r.id, "name": r.name, "web_analytics": r.analytics, "online": r.online,
-                "per_minute": r.minutes, "last_hour": r.hour, "visitors_today": r.today,
+                "per_minute": if r.hourly { None } else { Some(&r.minutes) }, "per_hour": if r.hourly { Some(&r.minutes) } else { None },
+                "last_hour": r.hour, "visitors_today": r.today,
                 "error_rate": r.errors, "cache_hit_rate": r.cache, "blocked_last_hour": r.blocked, "under_attack": r.attack,
                 "production": r.production.as_ref().map(|p| json!({"deployment": p.uid, "state": p.state, "at": p.at})),
             })
@@ -226,11 +237,15 @@ pub fn json(w: &World, now: i64) -> Value {
     json!({
         "team": w.team.as_ref().map(|t| json!({"id": t.id, "slug": t.slug, "name": t.name, "plan": t.plan()})),
         "online": g.online, "visitors_today": g.visitors, "page_views_today": g.views,
+        "live": {
+            "updated": w.traffic.as_ref().map(|t| t.at),
+            "paused": w.paused(now).map(|(why, until)| json!({"why": why, "until": until})),
+        },
         "building": g.building, "failed_in_production_today": g.failed_today,
         "projects": projects, "quiet_projects": folded,
         "deployments": deployments,
         "spend": spend,
-        "ai_gateway": w.ai.as_ref().map(|a| json!({"cost_today": a.cost_today, "requests_today": a.requests_today})),
+        "ai_gateway": w.spend.as_ref().map(|s| json!({"cost_this_period": s.ai_gateway()})),
         "vercel_status": w.status.as_ref().map(|s| json!({"indicator": s.status.indicator, "description": s.status.description,
             "incidents": s.incidents.iter().map(|i| json!({"name": i.name, "status": i.status, "impact": i.impact})).collect::<Vec<_>>()})),
         "domains": w.domains.iter().map(|d| json!({"name": d.name, "expires_at": d.expires_at, "renews": d.renew, "misconfigured": d.misconfigured})).collect::<Vec<_>>(),

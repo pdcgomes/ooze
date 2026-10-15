@@ -235,6 +235,22 @@ impl View {
                     let plan = team.plan().map(|p| format!(" · {}", capitalised(p))).unwrap_or_default();
                     title.push(Span::styled(format!(" {}{plan} ", team.title()), Style::new().fg(t.text)));
                 }
+                if let Some((why, until)) = self.world.paused(now) {
+                    let till = fmt::when(until, now);
+                    // The right of the border has the lights, the time it was updated and the clock.
+                    let room =
+                        (area.width as usize).saturating_sub(title.iter().map(|s| s.width()).sum::<usize>() + 50);
+                    let said = [
+                        format!(" live numbers paused till {till}: {why} "),
+                        format!(" live numbers paused till {till} "),
+                        format!(" paused till {till} "),
+                    ]
+                    .into_iter()
+                    .find(|s| s.chars().count() <= room);
+                    if let Some(said) = said {
+                        title.push(Span::styled(said, Style::new().fg(t.orange)));
+                    }
+                }
             }
             Link::Down(why) => {
                 border = t.red;
@@ -262,7 +278,12 @@ impl View {
         let api = match &self.world.link {
             Link::Down(_) | Link::Refused(_) => t.red,
             _ if self.world.limited.is_some_and(|until| until > now) => t.orange,
-            _ if self.world.failed.iter().any(|(s, (at, _))| *s != Source::Status && now - at < 120_000) => t.yellow,
+            _ if self.world.failed.iter().any(|(s, (at, e))| {
+                *s != Source::Status && now - at < 120_000 && !matches!(e, crate::api::ApiError::Budget(_))
+            }) =>
+            {
+                t.yellow
+            }
             Link::Up => t.green,
             Link::Connecting => t.gutter,
         };
@@ -295,13 +316,16 @@ impl View {
         let label = |s: &str| Span::styled(s.to_string(), Style::new().fg(t.comment));
         // The richest line that fits: the sparkline goes first, then the counts.
         let left = |spark_w: usize, today: bool, counts: bool| -> Vec<Span<'static>> {
-            let mut left: Vec<Span> = vec![
-                Span::raw(" "),
-                label("online "),
-                Span::styled(fmt::num(g.online), Style::new().fg(t.teal).add_modifier(Modifier::BOLD)),
-            ];
+            let online = match g.online {
+                Some(n) => Span::styled(fmt::num(n), Style::new().fg(t.teal).add_modifier(Modifier::BOLD)),
+                None => Span::styled("–", Style::new().fg(t.comment)),
+            };
+            let mut left: Vec<Span> = vec![Span::raw(" "), label("online "), online];
             if spark_w > 0 {
                 left.push(Span::raw("  "));
+                if g.hourly {
+                    left.push(label("24 h "));
+                }
                 left.push(Span::styled(
                     art::sparkline(&g.minutes[g.minutes.len().saturating_sub(spark_w)..]),
                     Style::new().fg(t.teal),
@@ -453,11 +477,17 @@ impl View {
     fn draw_projects(&mut self, f: &mut Frame, area: Rect, now: i64) {
         let t = self.theme;
         let (rows, folded) = self.shown_rows(now);
-        let busy = rows.iter().filter(|r| r.online > 0).count();
-        let more = vec![Span::styled(
-            format!("· {} with visitors ", busy),
-            Style::new().fg(if busy > 0 { t.teal } else { t.comment }),
-        )];
+        let busy = rows.iter().filter(|r| r.online.unwrap_or(0) > 0).count();
+        let more = if self.world.live(now).is_some() {
+            vec![Span::styled(
+                format!("· {} with visitors ", busy),
+                Style::new().fg(if busy > 0 { t.teal } else { t.comment }),
+            )]
+        } else if self.world.hourly(now) {
+            vec![Span::styled("· by the hour, from Web Analytics ", Style::new().fg(t.comment))]
+        } else {
+            vec![]
+        };
         let mut block = self
             .panel(self.border(Panel::Projects))
             .title(self.title("projects", more))
@@ -472,7 +502,7 @@ impl View {
         }
         let w = inner.width as usize;
         let cols = Columns::for_width(w);
-        let mut lines = vec![self.projects_heading(&cols)];
+        let mut lines = vec![self.projects_heading(&cols, self.world.hourly(now))];
         let mut selected = 0;
         for r in &rows {
             if Some(&r.id) == self.project.as_ref() {
@@ -500,11 +530,13 @@ impl View {
         f.render_widget(Paragraph::new(shown), inner);
     }
 
-    fn projects_heading(&self, c: &Columns) -> Line<'static> {
+    fn projects_heading(&self, c: &Columns, hourly: bool) -> Line<'static> {
         let mut s = format!("  {}", fmt::pad("project", c.name));
         s += &fmt::rpad("online", c.online);
         if c.spark > 0 {
-            s += &format!("  {}", fmt::pad(&format!("last {} min", c.spark.min(SHOWN)), c.spark));
+            let span =
+                if hourly { format!("last {} h", c.spark.min(24)) } else { format!("last {} min", c.spark.min(SHOWN)) };
+            s += &format!("  {}", fmt::pad(&span, c.spark));
         }
         s += &fmt::rpad("views/h", c.hour);
         if c.today > 0 {
@@ -539,8 +571,12 @@ impl View {
                 Style::new().fg(art::project_colour(&r.name, self.truecolor)).add_modifier(Modifier::BOLD),
             ),
         ];
-        let online = if r.analytics { fmt::rpad(&fmt::num(r.online), c.online) } else { fmt::rpad("–", c.online) };
-        spans.push(Span::styled(online, Style::new().fg(if r.online > 0 { t.teal } else { t.comment })));
+        let online = match (r.analytics, r.online) {
+            (true, Some(n)) => fmt::rpad(&fmt::num(n), c.online),
+            _ => fmt::rpad("–", c.online),
+        };
+        let lit = r.analytics && r.online.unwrap_or(0) > 0;
+        spans.push(Span::styled(online, Style::new().fg(if lit { t.teal } else { t.comment })));
         if c.spark > 0 {
             let values: Vec<u64> = r.minutes[r.minutes.len().saturating_sub(c.spark)..].to_vec();
             let line = fmt::pad(&art::sparkline(&values), c.spark);
@@ -808,7 +844,7 @@ impl View {
         if !services.is_empty() {
             lines.push(Line::from(Span::styled(fmt::fit_end(&services.join(" · "), w), Style::new().fg(t.text))));
         }
-        let ai = self.world.ai.as_ref().filter(|a| a.requests_today > 0 || a.cost_today > 0.0);
+        let ai = spend.ai_gateway();
         if let Some(b) = self.world.budgets.iter().find(|b| b.scope_type == "team") {
             let period =
                 b.refresh_period.as_deref().filter(|p| *p != "none").map(|p| format!(" {p}")).unwrap_or_default();
@@ -823,13 +859,9 @@ impl View {
                 ),
                 Style::new().fg(t.text),
             )));
-        } else if let Some(ai) = ai {
+        } else if ai > 0.0 {
             lines.push(Line::from(Span::styled(
-                format!(
-                    "AI Gateway {} today · {}",
-                    fmt::money(ai.cost_today),
-                    fmt::count(ai.requests_today, "request", "requests")
-                ),
+                format!("AI Gateway {} this period", fmt::money(ai)),
                 Style::new().fg(t.text),
             )));
         }
@@ -1169,17 +1201,19 @@ impl View {
             if row.analytics { "on" } else { "off: its rows show requests instead of page views" },
         ));
         if row.analytics {
-            lines.push(self.pair(
-                "now",
-                format!("{} online · {} in the last hour", row.online, fmt::count(row.hour, "page view", "page views")),
-            ));
-            if let Some((visitors, views)) = w.today.get(id) {
+            let views = fmt::count(row.hour, "page view", "page views");
+            lines.push(match row.online {
+                Some(n) => self.pair("now", format!("{n} online · {views} in the last hour")),
+                None if row.hourly => self.pair("last hour", format!("{views} in the last whole hour")),
+                None => self.pair("now", "who's online isn't known yet"),
+            });
+            if let Some((visitors, views)) = w.today(id) {
                 lines.push(self.pair(
                     "today",
                     format!(
-                        "{} · {}",
-                        fmt::count(*visitors, "visitor", "visitors"),
-                        fmt::count(*views, "page view", "page views")
+                        "{} · {} since midnight UTC",
+                        fmt::count(visitors, "visitor", "visitors"),
+                        fmt::count(views, "page view", "page views")
                     ),
                 ));
             }
@@ -1226,9 +1260,9 @@ impl View {
             }
             Some(d) => {
                 for (label, rows, unit) in [
-                    ("pages, last hour", &d.pages, "views"),
-                    ("referrers, last hour", &d.referrers, "views"),
-                    ("countries, last hour", &d.countries, "views"),
+                    ("pages, last 24 h", &d.pages, "views"),
+                    ("referrers, last 24 h", &d.referrers, "views"),
+                    ("countries, last 24 h", &d.countries, "views"),
                     ("5xx by route, last hour", &d.errors, "errors"),
                 ] {
                     if !rows.is_empty() {
@@ -1424,15 +1458,9 @@ impl View {
                 lines.extend(table(rows));
             }
         }
-        if w.ai.is_some() || !w.budgets.is_empty() {
+        if spend.ai_gateway() > 0.0 || !w.budgets.is_empty() {
             lines.push(Line::default());
             lines.push(self.rule("AI Gateway"));
-            if let Some(ai) = &w.ai {
-                lines.push(self.pair(
-                    "today",
-                    format!("{} · {}", fmt::money(ai.cost_today), fmt::count(ai.requests_today, "request", "requests")),
-                ));
-            }
             if spend.ai_gateway() > 0.0 {
                 lines.push(self.pair("this period", fmt::money(spend.ai_gateway())));
             }
@@ -1666,9 +1694,11 @@ impl View {
         self.overlay = match self.focus {
             Panel::Projects => self.project.clone().map(|id| {
                 let now = self.now();
-                let stale = self.world.details.get(&id).is_none_or(|d| now - d.at > 60_000);
+                let stale = self.world.details.get(&id).is_none_or(|d| now - d.at > 300_000);
+                let failing =
+                    self.world.rows(now, true).0.iter().any(|r| r.id == id && r.errors.is_some_and(|e| e > 0.0));
                 match &self.hub {
-                    Some(hub) if stale => hub.detail(&id),
+                    Some(hub) if stale => hub.detail(&id, failing),
                     None if stale => {
                         let name = self.world.project_name(&id);
                         self.world
@@ -1814,7 +1844,7 @@ impl View {
                     Source::Health,
                     Source::Deployments,
                     Source::Projects,
-                    Source::Today,
+                    Source::Analytics,
                     Source::Status,
                     Source::Events,
                     Source::Alerts,
@@ -1976,7 +2006,23 @@ pub fn run_demo(cfg: &Config) -> Result<()> {
     drive(View::new(None, cfg, None), crate::demo::spawn())
 }
 
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOPPED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Has a stop, or the terminal going away, end the view the way q does, so
+/// the terminal is put back.
+fn catch_signals() {
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe { libc::signal(signal, on_signal as *const () as libc::sighandler_t) };
+    }
+}
+
 fn drive(mut view: View, rx: Receiver<Envelope>) -> Result<()> {
+    catch_signals();
     let mut terminal = ratatui::init();
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::EnableMouseCapture);
     let result = (|| -> Result<()> {
@@ -2008,7 +2054,7 @@ fn drive(mut view: View, rx: Receiver<Envelope>) -> Result<()> {
                     _ => {}
                 }
             }
-            if view.quit {
+            if view.quit || STOPPED.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
         }
@@ -2124,6 +2170,33 @@ mod tests {
     }
 
     #[test]
+    fn paused_live_numbers_say_why_and_show_the_last_24_hours() {
+        let mut v = view();
+        if let Some(t) = v.world.traffic.as_mut() {
+            t.at = NOW - 20 * crate::model::MINUTE;
+        }
+        let until = NOW + 40 * crate::model::MINUTE;
+        v.world.apply(Msg::Failed(Source::Traffic, crate::api::ApiError::Capped(until, "daily".into())), NOW);
+        let screen = snapshot(&mut v, 160, 48);
+        let said = format!("live numbers paused till {}: Vercel's daily query limit reached", fmt::when(until, NOW));
+        assert!(screen.contains(&said), "{screen}");
+        let lines: Vec<&str> = screen.lines().collect();
+        let first = lines.iter().position(|l| l.contains("project  ")).unwrap();
+        assert!(lines[first + 1].contains("moth-radio"), "page views by the hour first: {screen}");
+        let narrow = snapshot(&mut v, 100, 32);
+        assert!(
+            narrow.contains(&format!(" paused till {} ", fmt::when(until, NOW))) && narrow.contains("api ●"),
+            "{narrow}"
+        );
+        assert!(screen.contains("online –  24 h "), "who's online isn't known: {screen}");
+        assert!(
+            screen.contains("projects · by the hour, from Web Analytics") && screen.contains("last 24 h"),
+            "{screen}"
+        );
+        assert!(!screen.contains("couldn't"), "{screen}");
+    }
+
+    #[test]
     fn a_narrow_window_drops_billing_and_columns_but_keeps_the_rest() {
         let mut v = view();
         let screen = snapshot(&mut v, 100, 32);
@@ -2155,7 +2228,7 @@ mod tests {
         snapshot(&mut v, 160, 48);
         v.press("\n");
         let screen = snapshot(&mut v, 160, 48);
-        assert!(screen.contains("web analytics") && screen.contains("── referrers, last hour ──"), "{screen}");
+        assert!(screen.contains("web analytics") && screen.contains("── referrers, last 24 h ──"), "{screen}");
         assert!(
             screen.contains("news.ycombinator.com") && screen.contains("12,840 visitors · 41,220 page views"),
             "{screen}"

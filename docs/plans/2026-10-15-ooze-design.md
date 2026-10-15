@@ -1,7 +1,8 @@
 # ooze: design
 
-15 October 2026. The screen was reviewed; the rest was built as planned, with two corrections that real data forced:
+15 October 2026. The screen was reviewed; the rest was built as planned, with three corrections that real data forced:
 
+- **Vercel limits a team's observability queries a day.** On the first day, two oozes and testing used up the team's daily limit, about 1,100 to 1,300 queries by ooze's own count. Vercel then refused every observability query with a 429, `retry-after: 86400` and "You have reached the daily observability metrics query limit for your team", while the per-minute headers still said 99 of 100 left. The limit isn't published. ooze now keeps to a daily budget of its own, shared by every ooze on the machine; it takes today's numbers, the hourly ones and a project's details from the Web Analytics API, which the limit doesn't cover; and it shows the last 24 hours by the hour when the live numbers stop.
 - **The plan's own fee isn't usage.** Billing charges count the Pro plan as a day-by-day subscription (service category "Subscription Licenses"), so ooze leaves the plan and seats out of the usage it measures against the included credit, and lists them apart.
 - **`targets.production` isn't what serves production.** It's a project's latest production deployment in any state, canceled ones included. ooze takes the deployment serving production from the project's `lastAliasRequest` (the last promote or roll back) and the newest ready production deployment.
 
@@ -14,7 +15,7 @@ Its creature is badcoffee.dev's Slime, which is shaped like a triangle. A slime 
 ## Decisions
 
 - **Name and creature:** ooze and the Slime. The name is free on crates.io and Homebrew; most verbs for watching aren't.
-- **How live:** Vercel's REST API, polled. Page views and visitors are about a minute behind and refresh every 10 seconds. A drain pushing each page view to a relay would be seconds behind, but it needs Pro, is billed by volume and needs something deployed in the team's account, so it's left for later.
+- **How live:** Vercel's REST API, polled. Page views and visitors are about a minute behind and refresh every 2 minutes, within the daily budget below. A drain pushing each page view to a relay would be seconds behind, but it needs Pro, is billed by volume and needs something deployed in the team's account, so it's left for later.
 - **What's in it** besides analytics, deployments and billing: error rates, cache hits and firewall blocks; a feed of Vercel's alerts, team activity and status-page incidents; AI Gateway spend; domains; notifications; actions. Speed Insights is left for later.
 - **How it's built:** Rust, ratatui, threads and channels, like sweep and hauntop. macOS and Linux.
 
@@ -24,13 +25,13 @@ Checked on 15 October 2026 against Vercel's OpenAPI spec (`https://openapi.verce
 
 | Number | Source | Refresh |
 |---|---|---|
-| Online now: unique visitors in the last 5 minutes | `POST /v2/observability/query`, metric `vercel.analytics_pageview.count`, aggregation `unique/visitor_id`, grouped by `project_id`, team scope | 10 s |
-| Page views a minute, last hour | The same metric summed, in 1-minute buckets. The newest minute was under a minute old. | 10 s |
-| Visitors and page views today | The same metric in one day's bucket, aligned to the local time zone with `bucketTimezone` | 5 min |
-| 7 and 30 days; top pages, referrers and countries | `GET /v1/query/web-analytics/visits/count` and `/aggregate`. Counts round to whole UTC days, and `until` is required although the spec says it's optional. | when a project is opened |
-| Requests, 5xx, cache hits | `vercel.request.count` grouped by `project_id`, filtered on `http_status ge 500`, and by `cache_result` | 30 s |
-| Firewall | `vercel.firewall_action.count`; `GET /v1/security/firewall/attack-status` per project | 30 s; 2 min |
-| AI Gateway | `vercel.ai_gateway_request.cost` and `.count`; the period's spend from billing | 5 min |
+| Online now: unique visitors in the last 5 minutes | `POST /v2/observability/query`, metric `vercel.analytics_pageview.count`, aggregation `unique/visitor_id`, grouped by `project_id`, team scope | 2 min |
+| Page views a minute, last hour | The same metric summed, in 1-minute buckets. The newest minute was under a minute old. | 2 min |
+| Visitors and page views today; page views each hour of the last 24 | `GET /v1/query/web-analytics/visits/count` from midnight UTC to the next, and `/aggregate` with `by=hour`, for each project with Web Analytics. Counts round to whole UTC days and leave out `until`'s day; hourly buckets keep to the hour, with an empty one for `until`'s own hour added. | 15 min |
+| 7 and 30 days; top pages, referrers and countries over 24 hours | The same endpoints; `/aggregate` by `requestPath`, `referrerHostname` and `country` adds an "Others" bucket, which ooze leaves out. `until` is required although the spec says it's optional. | when a project is opened |
+| Requests and 5xx | `vercel.request.count` grouped by `project_id` and `http_status`, in one query | 10 min |
+| Cache hits; firewall | `vercel.request.count` by `cache_result`; `vercel.firewall_action.count`; `GET /v1/security/firewall/attack-status` per project | 30 min; 5 min |
+| AI Gateway | The period's spend from billing; `GET /ai-gateway/budgets/list` | 30 min |
 | Projects | `GET /v10/projects`: `webAnalytics.enabledAt`, `targets.production` | 5 min |
 | Deployments | `GET /v7/deployments`, every project at once; build logs from `GET /v3/deployments/{id}/events?follow=1` while a deployment's details are open | 5 s while one builds, 15 s otherwise |
 | Plan, period and credit | `GET /v2/teams/{id}`: `billing.plan`, `billing.period`, `billing.invoiceItems.includedAllocationUsd` (the included credit), seats, add-ons and spend controls | 10 min |
@@ -38,7 +39,13 @@ Checked on 15 October 2026 against Vercel's OpenAPI spec (`https://openapi.verce
 | Domains | `GET /v5/domains` (`expiresAt`, `renew`) and `GET /v6/domains/{domain}/config` (`misconfigured`) | hourly |
 | Feed | `GET /v3/events` (team activity, with readable text); `GET /alerts/v3/groups` (Vercel's anomaly alerts, used by the Vercel CLI but not in the published spec, so ooze carries on without it); `https://www.vercel-status.com/api/v2/summary.json` | 1 to 2 min |
 
-The rate limits seen were 100 observability queries a minute, 400 project requests and 1,000 deployment requests. Steady state uses about 25 observability queries a minute. ooze reads `x-ratelimit-remaining` and slows down when a fifth is left.
+The rate limits seen were 100 observability queries a minute, 400 project and Web Analytics requests, and 1,000 deployment requests, and a daily limit on observability queries for each team, whose size isn't published.
+
+### The daily budget
+
+ooze counts its observability queries by the hour in a file in its cache folder, locked while it's read and written, so every ooze on the machine counts against the same budget: 600 in any 24 hours by default (`daily_queries`). A query that would go over it waits until enough of the oldest hours have passed. Each answer is kept beside the count, and an ooze that finds one fresh enough uses it rather than asking again, so the view and `ooze watch` running together cost no more than the view. When half the budget is spent, the budgeted sources ask half as often, and a quarter as often past three quarters.
+
+When Vercel says the daily limit is reached, every ooze stops asking for an hour, then one tries again. The view keeps the last live numbers with their age for 10 minutes, then shows who's online as unknown, the last 24 hours by the hour from Web Analytics, and why, with when ooze tries again. The open view starts at about 70 queries an hour and slows to under 20; `ooze watch` alone makes 6.
 
 ## The screen
 
@@ -105,14 +112,15 @@ The team is `--team`, or `team` in the settings, or the Vercel CLI's current tea
 - **No token, or a rejected one:** the view says how to sign in, and `--once` exits with an error.
 - **Billing refused** (a role without billing access): the billing panel says so and everything else carries on.
 - **Rate limited:** ooze waits until `x-ratelimit-reset`, and the header's API light turns orange.
+- **The daily limit reached, or ooze's budget spent:** the live numbers stop, the header says why and when ooze asks again, and the projects show the last 24 hours by the hour. The API light turns orange for Vercel's limit, not for ooze's own budget.
 - **Vercel unreachable:** the Slime sleeps, the header's border turns red, the numbers stay with how old they are, and ooze tries again, waiting longer each time.
 - **A project without Web Analytics** shows requests instead of page views.
 
 ## Code
 
-`src/`: `main` (the commands), `theme`, `art` (the Slime, sparklines, meters), `fmt`, `config`, `auth`, `api` (the client and the response types), `poll` (a thread per source), `model` (the world, folding in each message), `billing`, `feed`, `notify`, `actions`, `tui`, `demo`, `report`, `agent`.
+`src/`: `main` (the commands), `theme`, `art` (the Slime, sparklines, meters), `fmt`, `config`, `auth`, `api` (the client and the response types), `poll` (a thread per source), `budget` (the daily budget and the answers oozes share), `model` (the world, folding in each message), `billing`, `feed`, `notify`, `actions`, `tui`, `demo`, `report`, `agent`.
 
-Tests cover parsing each response (from fixtures written by hand, nothing from a real account), billing sums and the projection, the spike rules, the order tokens are tried in and expiry, each action's preconditions, frames of the demo at several sizes, keys driving the view, and a local HTTP server standing in for Vercel for the client's retries and rate limits. `ooze demo` and `ooze snapshot` draw a made-up team for screenshots and tests.
+Tests cover parsing each response (from fixtures written by hand, nothing from a real account), billing sums and the projection, the spike rules, the order tokens are tried in and expiry, each action's preconditions, the budget's count, pause and sharing, frames of the demo at several sizes, paused live numbers included, keys driving the view, and a local HTTP server standing in for Vercel for the client's retries, rate limits and daily limit. `ooze demo` and `ooze snapshot` draw a made-up team for screenshots and tests.
 
 ## Release
 

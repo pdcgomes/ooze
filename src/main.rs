@@ -7,6 +7,7 @@ mod api;
 mod art;
 mod auth;
 mod billing;
+mod budget;
 mod config;
 mod demo;
 mod feed;
@@ -133,7 +134,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         None => {
             let api = signed_in(&home)?;
-            let (hub, rx) = poll::Hub::start(api, cfg.clone(), home.clone(), team);
+            let (hub, rx) = poll::Hub::start(api, cfg.clone(), home.clone(), team, poll::Pace::View);
             tui::run(hub, rx, &cfg, notify::Notifier::new(&cfg, &home))?;
         }
         Some(Cmd::Demo) => tui::run_demo(&cfg)?,
@@ -230,6 +231,18 @@ fn status(home: &config::Home, cfg: &config::Config, team: Option<String>) -> Re
             _ => "not installed (`ooze agent install`)",
         }
     );
+    if let Some(team) = &chosen {
+        let b = budget::Budget::new(&home.cache, team, cfg.daily_queries);
+        let s = b.state();
+        let at = now();
+        let paused = match s.paused_until.filter(|u| *u > at) {
+            Some(until) => {
+                format!(" · paused: Vercel's daily limit was reached; ooze tries again at {}", fmt::time(until))
+            }
+            None => String::new(),
+        };
+        println!("queries    {} of ooze's {} observability queries in the last 24 hours{paused}", s.used(at), b.daily);
+    }
     for (kind, l) in api.limits() {
         println!("limit      {kind}: {} of {} left this minute", l.remaining, l.limit);
     }
@@ -244,7 +257,7 @@ fn watch(home: &config::Home, cfg: config::Config, team: Option<String>) -> Resu
         bail!("another `ooze watch` is sending the notifications already");
     }
     let api = signed_in(home)?;
-    let (hub, rx) = poll::Hub::start(api, cfg.clone(), home.clone(), team);
+    let (hub, rx) = poll::Hub::start(api, cfg.clone(), home.clone(), team, poll::Pace::Watch);
     let mut world = model::World::new(now(), cfg);
     let mut generation = 0;
     println!("{} ooze watch: started", fmt::when(now(), now()));

@@ -12,8 +12,11 @@ pub struct Config {
     pub team: String,
     /// Turns the actions off.
     pub read_only: bool,
-    /// Seconds between refreshes of the live numbers.
+    /// Seconds between refreshes of the live numbers, 60 at the least.
     pub refresh: u64,
+    /// The most observability queries ooze makes in any 24 hours, across every
+    /// ooze on this machine.
+    pub daily_queries: u64,
     /// Projects with fewer page views (or requests) in the last hour fold into one line.
     pub quiet_below: u64,
     pub notify: Notify,
@@ -49,7 +52,8 @@ impl Default for Config {
         Config {
             team: String::new(),
             read_only: false,
-            refresh: 10,
+            refresh: 120,
+            daily_queries: 600,
             quiet_below: 1,
             notify: Notify::default(),
             thresholds: Thresholds::default(),
@@ -88,9 +92,17 @@ team = ""
 # Turns off cancel, redeploy, promote and roll back, so ooze only watches.
 read_only = false
 
-# Seconds between refreshes of the live numbers. Vercel's own data is about a
-# minute behind, so refreshing much faster shows nothing new.
-refresh = 10
+# Seconds between refreshes of the live numbers: who's online and page views a
+# minute. Each refresh is two observability queries, which Vercel limits a day
+# for each team, so it's 60 at the least, and ooze refreshes less often as the
+# day's budget below runs down.
+refresh = 120
+
+# The most observability queries ooze makes in any 24 hours, counting every
+# ooze on this machine. When a team reaches Vercel's daily limit, which Vercel
+# doesn't publish, the live numbers stop until the next day. Web Analytics,
+# deployments and billing don't count.
+daily_queries = 600
 
 # Projects with fewer page views (or requests) than this in the last hour fold
 # into one line, which `a` opens.
@@ -175,10 +187,20 @@ impl Home {
     }
 }
 
-/// Loads the settings, writing the commented default first if there are none.
+/// Templates earlier versions wrote, by their FNV-1a hash: a settings file
+/// still exactly one of them is replaced by the current template.
+const PAST_TEMPLATES: [u64; 1] = [0x8e41_b9f4_f8b6_ddbe];
+
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// Loads the settings, writing the commented default first if there are none
+/// or they're an earlier version's, untouched.
 pub fn load_or_create(home: &Home) -> Result<Config> {
     let p = home.settings();
-    if !p.exists() {
+    let untouched = std::fs::read(&p).is_ok_and(|b| PAST_TEMPLATES.contains(&fnv(&b)));
+    if !p.exists() || untouched {
         let _ = std::fs::create_dir_all(&home.config);
         let _ = std::fs::write(&p, TEMPLATE);
     }
@@ -220,8 +242,25 @@ mod tests {
         assert!(c.read_only);
         assert!(c.notify.to.is_empty());
         assert!(c.notify.deploy_failed, "a key not given keeps its default");
-        assert_eq!(c.refresh, 10);
+        assert_eq!((c.refresh, c.daily_queries), (120, 600));
         assert_eq!(c.thresholds.spike_factor, 3.0);
+    }
+
+    #[test]
+    fn an_earlier_template_left_as_it_was_is_replaced_and_an_edited_one_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::under(dir.path());
+        std::fs::create_dir_all(&home.config).unwrap();
+        let earlier = include_str!("../tests/earlier-template.toml");
+        assert!(PAST_TEMPLATES.contains(&fnv(earlier.as_bytes())), "the hash is the earlier template's");
+        std::fs::write(home.settings(), earlier).unwrap();
+        assert_eq!(load_or_create(&home).unwrap().refresh, 120);
+        assert_eq!(std::fs::read_to_string(home.settings()).unwrap(), TEMPLATE);
+        let edited = earlier.replace("read_only = false", "read_only = true");
+        std::fs::write(home.settings(), &edited).unwrap();
+        let c = load_or_create(&home).unwrap();
+        assert_eq!((c.read_only, c.refresh), (true, 10), "what someone wrote stays");
+        assert_eq!(std::fs::read_to_string(home.settings()).unwrap(), edited);
     }
 
     #[test]

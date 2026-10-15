@@ -5,7 +5,7 @@
 
 use crate::billing::{Day, Spend};
 use crate::config::Config;
-use crate::model::{Ai, DomainState, Health, MINUTE, MINUTES, Msg, Traffic, World};
+use crate::model::{Analytics, DomainState, Edge, Health, MINUTE, MINUTES, Msg, Traffic, World};
 use crate::poll::Envelope;
 use crate::vercel::{self, Deployment, Event, Period, Project, StatusPage, Team, User};
 use serde_json::json;
@@ -158,29 +158,48 @@ impl Demo {
                 online.insert(id(name), (*share).max(recent / 6).min(share * 2 + 3));
             }
         }
-        Traffic { end: self.last_traffic, views: self.views.clone(), online }
+        Traffic { at: self.last_traffic, end: self.last_traffic, views: self.views.clone(), online }
     }
 
     fn health(&self) -> Health {
-        let mut h = Health { end: self.last_traffic, requests: self.requests.clone(), ..Health::default() };
-        for (name, _, usual, _) in PROJECTS.iter().filter(|p| p.2 > 0) {
+        let mut h = Health {
+            at: self.last_traffic,
+            end: self.last_traffic,
+            requests: self.requests.clone(),
+            ..Health::default()
+        };
+        for (name, _, _, _) in PROJECTS.iter().filter(|p| p.2 > 0) {
             let errors =
                 if *name == "grimoire-api" { vec![1, 0, 2, 1, 0, 1, 3, 0, 1, 2, 0, 1, 1, 0, 2] } else { vec![0; 15] };
             h.errors.insert(id(name), errors);
-            h.cache.insert(id(name), if *name == "grimoire-api" { (12, 88) } else { (90 + usual, 6) });
         }
-        h.blocked.insert(id("grimoire-api"), 412);
-        h.blocked.insert(id("moth-radio"), 9);
         h
     }
 
-    fn today(&self) -> BTreeMap<String, (u64, u64)> {
-        BTreeMap::from([
+    fn edge(&self) -> Edge {
+        let mut e = Edge { at: self.start, ..Edge::default() };
+        for (name, _, usual, _) in PROJECTS.iter().filter(|p| p.2 > 0) {
+            e.cache.insert(id(name), if *name == "grimoire-api" { (12, 88) } else { (90 + usual, 6) });
+        }
+        e.blocked.insert(id("grimoire-api"), 412);
+        e.blocked.insert(id("moth-radio"), 9);
+        e
+    }
+
+    fn analytics(&self) -> Analytics {
+        let today = BTreeMap::from([
             (id("moth-radio"), (3_410, 6_120)),
             (id("cave-notes"), (980, 1_604)),
             (id("night-market"), (142, 391)),
             (id("tide-tables"), (6, 9)),
-        ])
+        ]);
+        let mut a = Analytics { at: self.start, today, ..Analytics::default() };
+        for (name, _, usual, _) in PROJECTS.iter().filter(|p| p.1 && p.2 > 0) {
+            // Quiet at night, busy in the afternoon.
+            let hours = (0..24u64).map(|h| usual * 60 * (2 + (h + 6) % 24 * 6 / 24) / 4 + h * 7 % 11).collect();
+            a.hourly.insert(id(name), hours);
+        }
+        a
     }
 
     fn spend(&self) -> Spend {
@@ -252,9 +271,9 @@ impl Demo {
             Msg::Deployments(self.deployments.clone()),
             Msg::Traffic(self.traffic()),
             Msg::Health(self.health()),
-            Msg::Today(self.today()),
+            Msg::Edge(self.edge()),
+            Msg::Analytics(self.analytics()),
             Msg::Billing(self.spend()),
-            Msg::Ai(Ai { cost_today: 3.2, requests_today: 1_240 }),
             Msg::Events(events),
             Msg::Domains(vec![
                 DomainState {

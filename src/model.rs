@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::feed::{Kind, Line, Tone};
 use crate::fmt;
 use crate::vercel::{AlertGroup, Anomaly, Budget, Deployment, Event, Project, StatusPage, Team, User};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub const MINUTE: i64 = 60_000;
@@ -15,6 +16,10 @@ pub const MINUTE: i64 = 60_000;
 pub const MINUTES: usize = 60;
 /// Minutes in a project's sparkline.
 pub const SHOWN: usize = 30;
+/// How old the live numbers can be and still be shown as live.
+pub const STALE: i64 = 10 * MINUTE;
+/// How old requests and errors can be and still be shown.
+const HEALTH_STALE: i64 = 60 * MINUTE;
 const FEED: usize = 600;
 /// How long a project's spike keeps it from spiking again.
 const SPIKE_QUIET: i64 = 30 * MINUTE;
@@ -25,11 +30,11 @@ pub enum Source {
     Team,
     Projects,
     Traffic,
-    Today,
     Health,
+    Edge,
+    Analytics,
     Deployments,
     Billing,
-    Ai,
     Budgets,
     Domains,
     Status,
@@ -45,11 +50,11 @@ impl Source {
             Source::Team => "the team",
             Source::Projects => "projects",
             Source::Traffic => "page views",
-            Source::Today => "today's visitors",
             Source::Health => "requests",
+            Source::Edge => "cache and firewall",
+            Source::Analytics => "Web Analytics",
             Source::Deployments => "deployments",
             Source::Billing => "billing",
-            Source::Ai => "AI Gateway",
             Source::Budgets => "AI Gateway budgets",
             Source::Domains => "domains",
             Source::Status => "Vercel's status",
@@ -71,8 +76,10 @@ pub enum Link {
 }
 
 /// Page views a minute and who's online, by project id.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Traffic {
+    /// When it was fetched.
+    pub at: i64,
     /// The minute after the newest bucket.
     pub end: i64,
     /// The last MINUTES minutes, oldest first.
@@ -81,24 +88,35 @@ pub struct Traffic {
     pub online: BTreeMap<String, u64>,
 }
 
-/// Requests, errors, cache and firewall, by project id.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Requests and errors, by project id.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Health {
+    pub at: i64,
     pub end: i64,
     /// Requests a minute, the last MINUTES, oldest first.
     pub requests: BTreeMap<String, Vec<u64>>,
     /// 5xx responses a minute, the last 15, oldest first.
     pub errors: BTreeMap<String, Vec<u64>>,
+}
+
+/// The cache and the firewall, by project id.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Edge {
+    pub at: i64,
     /// Cache hits and misses over the last 15 minutes.
     pub cache: BTreeMap<String, (u64, u64)>,
     /// Requests the firewall challenged or denied in the last hour.
     pub blocked: BTreeMap<String, u64>,
 }
 
+/// What Web Analytics says, by project id. Its days start at midnight UTC.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Ai {
-    pub cost_today: f64,
-    pub requests_today: u64,
+pub struct Analytics {
+    pub at: i64,
+    /// Visitors and page views today.
+    pub today: BTreeMap<String, (u64, u64)>,
+    /// Page views each hour of the last 24, oldest first, ending with this one.
+    pub hourly: BTreeMap<String, Vec<u64>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -116,7 +134,8 @@ pub struct LogLine {
     pub error: bool,
 }
 
-/// What's open in a project's details: where its visitors come from and go.
+/// What's open in a project's details: where its visitors come from and go
+/// over the last 24 hours, and its 5xx by route over the last hour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Detail {
     pub at: i64,
@@ -138,12 +157,11 @@ pub enum Msg {
     Team(Team),
     Projects(Vec<Project>),
     Traffic(Traffic),
-    /// Visitors and page views since local midnight, by project id.
-    Today(BTreeMap<String, (u64, u64)>),
     Health(Health),
+    Edge(Edge),
+    Analytics(Analytics),
     Deployments(Vec<Deployment>),
     Billing(Spend),
-    Ai(Ai),
     Budgets(Vec<Budget>),
     Domains(Vec<DomainState>),
     Status(StatusPage),
@@ -182,10 +200,15 @@ pub struct Row {
     pub id: String,
     pub name: String,
     pub analytics: bool,
-    pub online: u64,
-    /// Page views a minute (or requests, without Web Analytics), the last SHOWN.
+    /// Unknown while the live numbers are stale.
+    pub online: Option<u64>,
+    /// Page views a minute (or requests, without Web Analytics), the last
+    /// SHOWN; or page views each hour of the last 24 while the live numbers
+    /// are stale.
     pub minutes: Vec<u64>,
-    /// Page views (or requests) in the last hour.
+    pub hourly: bool,
+    /// Page views (or requests) in the last hour; or the last whole hour, by
+    /// the hour.
     pub hour: u64,
     pub today: Option<u64>,
     /// The share of requests answered with a 5xx in the last 15 minutes.
@@ -208,8 +231,10 @@ pub struct Prod {
 /// The header's numbers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Glance {
-    pub online: u64,
+    pub online: Option<u64>,
+    /// Page views a minute, or each hour while the live numbers are stale.
     pub minutes: Vec<u64>,
+    pub hourly: bool,
     pub visitors: u64,
     pub views: u64,
     pub building: usize,
@@ -228,10 +253,10 @@ pub struct World {
     pub projects: Vec<Project>,
     pub traffic: Option<Traffic>,
     pub health: Option<Health>,
-    pub today: BTreeMap<String, (u64, u64)>,
+    pub edge: Option<Edge>,
+    pub analytics: Option<Analytics>,
     pub deployments: Vec<Deployment>,
     pub spend: Option<Spend>,
-    pub ai: Option<Ai>,
     pub budgets: Vec<Budget>,
     pub domains: Vec<DomainState>,
     pub status: Option<StatusPage>,
@@ -278,10 +303,10 @@ impl World {
             projects: vec![],
             traffic: None,
             health: None,
-            today: BTreeMap::new(),
+            edge: None,
+            analytics: None,
             deployments: vec![],
             spend: None,
-            ai: None,
             budgets: vec![],
             domains: vec![],
             status: None,
@@ -354,11 +379,11 @@ impl World {
             Msg::Team(_) => Some(Source::Team),
             Msg::Projects(_) => Some(Source::Projects),
             Msg::Traffic(_) => Some(Source::Traffic),
-            Msg::Today(_) => Some(Source::Today),
             Msg::Health(_) => Some(Source::Health),
+            Msg::Edge(_) => Some(Source::Edge),
+            Msg::Analytics(_) => Some(Source::Analytics),
             Msg::Deployments(_) => Some(Source::Deployments),
             Msg::Billing(_) => Some(Source::Billing),
-            Msg::Ai(_) => Some(Source::Ai),
             Msg::Budgets(_) => Some(Source::Budgets),
             Msg::Domains(_) => Some(Source::Domains),
             Msg::Status(_) => Some(Source::Status),
@@ -367,12 +392,27 @@ impl World {
             Msg::Attacks(_) => Some(Source::Attacks),
             _ => None,
         };
+        // Answers kept from earlier, or shared by another ooze, are as old as
+        // when they were fetched.
+        let fetched = match &msg {
+            Msg::Traffic(t) => t.at,
+            Msg::Health(h) => h.at,
+            Msg::Edge(e) => e.at,
+            Msg::Analytics(a) => a.at,
+            _ => now,
+        };
         let mut first = false;
         if let Some(s) = source {
-            self.updated.insert(s, now);
-            self.failed.remove(&s);
+            if fetched < self.updated.get(&s).copied().unwrap_or(0) {
+                return;
+            }
+            self.updated.insert(s, fetched);
             first = self.heard.insert(s);
-            if s != Source::Status && self.link != Link::Up {
+            let fresh = now - fetched < STALE;
+            if fresh {
+                self.failed.remove(&s);
+            }
+            if fresh && s != Source::Status && self.link != Link::Up {
                 self.link = Link::Up;
                 self.since = now;
             }
@@ -394,17 +434,17 @@ impl World {
                 self.traffic = Some(t);
                 self.check_traffic(now, first);
             }
-            Msg::Today(t) => self.today = t,
             Msg::Health(h) => {
                 self.health = Some(h);
                 self.check_errors(now, first);
             }
+            Msg::Edge(e) => self.edge = Some(e),
+            Msg::Analytics(a) => self.analytics = Some(a),
             Msg::Deployments(d) => self.take_deployments(d, now),
             Msg::Billing(s) => {
                 self.spend = Some(s);
                 self.check_credit(now);
             }
-            Msg::Ai(a) => self.ai = Some(a),
             Msg::Budgets(b) => self.budgets = b,
             Msg::Domains(d) => self.take_domains(d, now, first),
             Msg::Status(s) => self.take_status(s, now, first),
@@ -445,10 +485,38 @@ impl World {
                 }
                 self.link = Link::Down(why.clone());
             }
-            ApiError::Limited(until) => self.limited = Some(*until),
+            ApiError::Limited(until, _) | ApiError::Capped(until, _) => self.limited = Some(*until),
             _ => {}
         }
         self.failed.insert(source, (now, e));
+    }
+
+    /// The live numbers, if they're recent enough to show as live.
+    pub fn live(&self, now: i64) -> Option<&Traffic> {
+        self.traffic.as_ref().filter(|t| now - t.at < STALE)
+    }
+
+    fn requests(&self, now: i64) -> Option<&Health> {
+        self.health.as_ref().filter(|h| now - h.at < HEALTH_STALE)
+    }
+
+    /// Why the live numbers aren't live, when they aren't: what stops ooze
+    /// asking, and when it asks again.
+    pub fn paused(&self, now: i64) -> Option<(String, i64)> {
+        if self.live(now).is_some() {
+            return None;
+        }
+        match self.failed.get(&Source::Traffic).map(|(_, e)| e) {
+            Some(ApiError::Capped(until, _)) => Some(("Vercel's daily query limit reached".into(), *until)),
+            Some(ApiError::Budget(until)) => Some(("ooze's daily query budget spent".into(), *until)),
+            Some(ApiError::Limited(until, _)) => Some(("Vercel's rate limit".into(), *until)),
+            _ => None,
+        }
+    }
+
+    /// A project's visitors and page views today, from Web Analytics.
+    pub fn today(&self, project: &str) -> Option<(u64, u64)> {
+        self.analytics.as_ref().and_then(|a| a.today.get(project)).copied()
     }
 
     fn take_deployments(&mut self, mut list: Vec<Deployment>, now: i64) {
@@ -658,7 +726,7 @@ impl World {
     }
 
     fn check_traffic(&mut self, now: i64, first: bool) {
-        let Some(t) = &self.traffic else { return };
+        let Some(t) = self.live(now) else { return };
         let th = self.cfg.thresholds.clone();
         let mut found = vec![];
         for (project, minutes) in &t.views {
@@ -703,7 +771,7 @@ impl World {
     }
 
     fn check_errors(&mut self, now: i64, first: bool) {
-        let Some(h) = &self.health else { return };
+        let Some(h) = self.health.as_ref().filter(|h| now - h.at < 2 * STALE) else { return };
         let th = self.cfg.thresholds.clone();
         let mut found = vec![];
         for (project, errors) in &h.errors {
@@ -764,12 +832,15 @@ impl World {
     /// Projects as rows, busiest first, and how many quiet ones are folded away.
     pub fn rows(&self, now: i64, all: bool) -> (Vec<Row>, usize) {
         let mut rows: Vec<Row> = self.projects.iter().map(|p| self.row(p, now)).collect();
-        rows.sort_by(|a, b| b.online.cmp(&a.online).then(b.hour.cmp(&a.hour)).then(a.name.cmp(&b.name)));
+        // By the hour, page views come before requests, who's online not being known.
+        rows.sort_by(|a, b| {
+            b.online.cmp(&a.online).then(b.hourly.cmp(&a.hourly)).then(b.hour.cmp(&a.hour)).then(a.name.cmp(&b.name))
+        });
         if all {
             return (rows, 0);
         }
         let quiet = |r: &Row| {
-            r.online == 0
+            r.online.unwrap_or(0) == 0
                 && r.hour < self.cfg.quiet_below.max(1)
                 && !r.attack
                 && r.production.as_ref().is_none_or(|p| {
@@ -781,33 +852,52 @@ impl World {
         (rows, folded)
     }
 
+    /// Whether the projects' sparklines are hours from Web Analytics, the live
+    /// numbers being stale.
+    pub fn hourly(&self, now: i64) -> bool {
+        self.live(now).is_none() && self.analytics.as_ref().is_some_and(|a| !a.hourly.is_empty())
+    }
+
     fn row(&self, p: &Project, now: i64) -> Row {
         let analytics = p.analytics();
-        let views = self.traffic.as_ref().and_then(|t| t.views.get(&p.id));
-        let requests = self.health.as_ref().and_then(|h| h.requests.get(&p.id));
-        let series = if analytics { views } else { requests };
-        let minutes: Vec<u64> = series.map(|s| s[s.len().saturating_sub(SHOWN)..].to_vec()).unwrap_or_default();
-        let hour = series.map(|s| s.iter().sum()).unwrap_or(0);
-        let h = self.health.as_ref();
+        let live = self.live(now);
+        let h = self.requests(now);
+        let shown = |s: &Vec<u64>| s[s.len().saturating_sub(SHOWN)..].to_vec();
+        let requests = h.and_then(|h| h.requests.get(&p.id));
+        let (minutes, hour, hourly) = if !analytics {
+            let minutes = if self.hourly(now) { vec![] } else { requests.map(shown).unwrap_or_default() };
+            (minutes, requests.map(|s| s.iter().sum()).unwrap_or(0), false)
+        } else if let Some(t) = live {
+            let views = t.views.get(&p.id);
+            (views.map(shown).unwrap_or_default(), views.map(|s| s.iter().sum()).unwrap_or(0), false)
+        } else {
+            match self.analytics.as_ref().and_then(|a| a.hourly.get(&p.id)) {
+                // The hour before this one, this one being under way.
+                Some(hours) => (hours.clone(), hours.iter().rev().nth(1).copied().unwrap_or(0), true),
+                None => (vec![], 0, false),
+            }
+        };
         let errors = h.and_then(|h| {
             let failed: u64 = h.errors.get(&p.id).map(|e| e.iter().sum()).unwrap_or(0);
             let total: u64 = h.requests.get(&p.id).map(|r| r.iter().rev().take(15).sum()).unwrap_or(0);
             (total > 0).then(|| failed as f64 / total as f64)
         });
-        let cache = h
-            .and_then(|h| h.cache.get(&p.id))
+        let e = self.edge.as_ref();
+        let cache = e
+            .and_then(|e| e.cache.get(&p.id))
             .and_then(|(hit, miss)| (hit + miss > 0).then(|| *hit as f64 / (hit + miss) as f64));
         Row {
             id: p.id.clone(),
             name: p.name.clone(),
             analytics,
-            online: self.traffic.as_ref().and_then(|t| t.online.get(&p.id)).copied().unwrap_or(0),
+            online: live.map(|t| t.online.get(&p.id).copied().unwrap_or(0)),
             minutes,
+            hourly,
             hour,
-            today: self.today.get(&p.id).map(|(visitors, _)| *visitors),
+            today: self.today(&p.id).map(|(visitors, _)| visitors),
             errors,
             cache,
-            blocked: h.and_then(|h| h.blocked.get(&p.id)).copied().unwrap_or(0),
+            blocked: e.and_then(|e| e.blocked.get(&p.id)).copied().unwrap_or(0),
             attack: self
                 .attacks
                 .get(&p.id)
@@ -876,20 +966,28 @@ impl World {
     }
 
     pub fn glance(&self, now: i64) -> Glance {
-        let mut minutes = vec![0u64; SHOWN];
-        if let Some(t) = &self.traffic {
-            for v in t.views.values() {
-                for (i, n) in v[v.len().saturating_sub(SHOWN)..].iter().enumerate() {
-                    minutes[i + SHOWN - v.len().min(SHOWN)] += n;
-                }
+        let live = self.live(now);
+        let hourly = self.hourly(now);
+        let series: Vec<&Vec<u64>> = match (live, &self.analytics) {
+            (Some(t), _) => t.views.values().collect(),
+            (None, Some(a)) if hourly => a.hourly.values().collect(),
+            _ => vec![],
+        };
+        let n = if hourly { 24 } else { SHOWN };
+        let mut minutes = vec![0u64; n];
+        for v in series {
+            for (i, x) in v[v.len().saturating_sub(n)..].iter().enumerate() {
+                minutes[i + n - v.len().min(n)] += x;
             }
         }
         let today = local_day(now);
+        let days = self.analytics.as_ref().map(|a| &a.today);
         Glance {
-            online: self.traffic.as_ref().map(|t| t.online.values().sum()).unwrap_or(0),
+            online: live.map(|t| t.online.values().sum()),
             minutes,
-            visitors: self.today.values().map(|(v, _)| v).sum(),
-            views: self.today.values().map(|(_, v)| v).sum(),
+            hourly,
+            visitors: days.map(|d| d.values().map(|(v, _)| v).sum()).unwrap_or(0),
+            views: days.map(|d| d.values().map(|(_, v)| v).sum()).unwrap_or(0),
             building: self.deployments.iter().filter(|d| d.running()).count(),
             failed_today: self
                 .deployments
@@ -1077,24 +1175,29 @@ pub mod tests {
         for m in &mut minutes[MINUTES - 5..] {
             *m = 20;
         }
-        let traffic = |m: Vec<u64>| Traffic {
-            end: NOW,
+        let traffic = |m: Vec<u64>, at: i64| Traffic {
+            at,
+            end: at,
             views: BTreeMap::from([("prj_moth-radio".to_string(), m)]),
             online: BTreeMap::from([("prj_moth-radio".to_string(), 18)]),
         };
-        w.apply(Msg::Traffic(traffic(vec![2; MINUTES])), NOW - 10_000);
-        w.apply(Msg::Traffic(traffic(minutes.clone())), NOW);
+        w.apply(Msg::Traffic(traffic(vec![2; MINUTES], NOW - 10_000)), NOW - 10_000);
+        w.apply(Msg::Traffic(traffic(minutes.clone(), NOW)), NOW);
         let line = w.feed.back().unwrap();
         assert_eq!(
             (line.who.as_str(), line.text.as_str()),
             ("moth-radio", "traffic 10× its usual · 100 page views in 5 min, 18 online")
         );
         assert_eq!(w.notices.len(), 1);
-        w.apply(Msg::Traffic(traffic(minutes)), NOW + 10_000);
+        w.apply(Msg::Traffic(traffic(minutes.clone(), NOW + 10_000)), NOW + 10_000);
         assert_eq!(w.notices.len(), 1, "not again for half an hour");
         let mut w = world();
-        w.apply(Msg::Traffic(traffic(vec![1; MINUTES])), NOW);
+        w.apply(Msg::Traffic(traffic(vec![1; MINUTES], NOW)), NOW);
         assert!(w.feed.is_empty(), "steady traffic is no spike");
+        let mut w = world();
+        w.apply(Msg::Traffic(traffic(vec![2; MINUTES], NOW - 3_600_000)), NOW);
+        w.apply(Msg::Traffic(traffic(minutes, NOW - 3_000_000)), NOW);
+        assert!(w.feed.is_empty(), "an old answer is no news");
     }
 
     #[test]
@@ -1105,17 +1208,19 @@ pub mod tests {
         views.insert("prj_cave-notes".to_string(), vec![1; MINUTES]);
         w.apply(
             Msg::Traffic(Traffic {
+                at: NOW,
                 end: NOW,
                 views,
                 online: BTreeMap::from([("prj_cave-notes".into(), 4), ("prj_moth-radio".into(), 2)]),
             }),
             NOW,
         );
-        let mut h = Health::default();
+        let mut h = Health { at: NOW, ..Health::default() };
         h.requests.insert("prj_moth-radio".into(), vec![10; MINUTES]);
         h.errors.insert("prj_moth-radio".into(), vec![1; 15]);
-        h.cache.insert("prj_moth-radio".into(), (90, 10));
         w.apply(Msg::Health(h), NOW);
+        let edge = Edge { at: NOW, cache: BTreeMap::from([("prj_moth-radio".into(), (90, 10))]), ..Edge::default() };
+        w.apply(Msg::Edge(edge), NOW);
         let (rows, folded) = w.rows(NOW, false);
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -1126,7 +1231,54 @@ pub mod tests {
         let moth = &rows[1];
         assert_eq!((moth.hour, moth.minutes.len(), moth.errors, moth.cache), (180, SHOWN, Some(0.1), Some(0.9)));
         assert_eq!(w.rows(NOW, true).0.len(), 3);
-        assert_eq!(w.glance(NOW).online, 6);
+        assert_eq!(w.glance(NOW).online, Some(6));
+    }
+
+    #[test]
+    fn stale_live_numbers_give_way_to_web_analytics_by_the_hour() {
+        let mut w = world();
+        let old = Traffic {
+            at: NOW - 20 * MINUTE,
+            end: NOW - 20 * MINUTE,
+            views: BTreeMap::from([("prj_moth-radio".to_string(), vec![3; MINUTES])]),
+            online: BTreeMap::from([("prj_moth-radio".to_string(), 5)]),
+        };
+        w.apply(Msg::Traffic(old), NOW);
+        let hours: Vec<u64> = (0..24).collect();
+        let a = Analytics {
+            at: NOW,
+            today: BTreeMap::from([("prj_moth-radio".to_string(), (40, 90))]),
+            hourly: BTreeMap::from([("prj_moth-radio".to_string(), hours)]),
+        };
+        w.apply(Msg::Analytics(a), NOW);
+        let (rows, _) = w.rows(NOW, true);
+        let moth = rows.iter().find(|r| r.name == "moth-radio").unwrap();
+        assert_eq!((moth.online, moth.hourly, moth.minutes.len()), (None, true, 24), "who's online isn't known");
+        assert_eq!((moth.hour, moth.today), (22, Some(40)), "the last whole hour");
+        let g = w.glance(NOW);
+        assert_eq!((g.online, g.hourly, g.minutes.len(), g.visitors, g.views), (None, true, 24, 40, 90));
+        assert_eq!(w.paused(NOW), None, "nothing said why yet");
+        let until = NOW + 40 * MINUTE;
+        w.apply(Msg::Failed(Source::Traffic, ApiError::Capped(until, "daily".into())), NOW);
+        assert_eq!(w.paused(NOW).map(|(_, at)| at), Some(until));
+        assert_eq!(w.limited, Some(until));
+        w.apply(Msg::Failed(Source::Traffic, ApiError::Budget(until)), NOW);
+        assert_eq!(w.paused(NOW).unwrap().0, "ooze's daily query budget spent");
+    }
+
+    #[test]
+    fn an_answer_older_than_the_one_shown_is_left_out() {
+        let mut w = world();
+        let t = |at: i64, online: u64| Traffic {
+            at,
+            end: at,
+            online: BTreeMap::from([("prj_moth-radio".into(), online)]),
+            ..Traffic::default()
+        };
+        w.apply(Msg::Traffic(t(NOW, 7)), NOW);
+        w.apply(Msg::Traffic(t(NOW - 5 * MINUTE, 3)), NOW);
+        assert_eq!(w.glance(NOW).online, Some(7));
+        assert_eq!(w.updated[&Source::Traffic], NOW);
     }
 
     #[test]
@@ -1157,7 +1309,7 @@ pub mod tests {
     #[test]
     fn an_error_spike_needs_enough_requests() {
         let mut w = world();
-        let mut h = Health::default();
+        let mut h = Health { at: NOW, ..Health::default() };
         h.requests.insert("prj_moth-radio".into(), vec![20; MINUTES]);
         h.errors.insert("prj_moth-radio".into(), vec![2; 15]);
         w.apply(Msg::Health(h.clone()), NOW);
