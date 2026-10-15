@@ -73,6 +73,8 @@ pub struct Project {
     pub framework: Option<String>,
     pub web_analytics: Option<Toggle>,
     pub targets: Option<Targets>,
+    /// The last promote or roll back: where production's domains were pointed.
+    pub last_alias_request: Option<AliasRequest>,
     pub live: bool,
     pub paused: bool,
     pub updated_at: Option<i64>,
@@ -94,6 +96,17 @@ pub struct Toggle {
     pub enabled_at: Option<i64>,
     pub disabled_at: Option<i64>,
     pub has_data: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AliasRequest {
+    pub to_deployment_id: Option<String>,
+    pub from_deployment_id: Option<String>,
+    pub job_status: Option<String>,
+    pub requested_at: Option<i64>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
