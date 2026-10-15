@@ -259,7 +259,9 @@ if __name__ == "__main__":
     # A build running, one failed, and a spike in the feed: about 75 s in.
     s.pump(75)
     shots = {"overview": s.grab()}
-    s.keys("tab", "home", "enter", wait=1.0)  # the build running, its log
+    s.keys("enter", wait=0.8)  # the busiest project: where its visitors come from
+    shots["project"] = s.grab()
+    s.keys("esc", "tab", "home", "enter", wait=1.0)  # the build running, its log
     shots["deployment"] = s.grab()
     s.keys("esc", "down", "down", wait=0.5)
     s.keys("R", wait=0.8)  # redeploy the failed one: it asks first

@@ -1,10 +1,12 @@
-# ooze
+<h1 align="center"><img src="docs/banner.png" width="480" alt="ooze"></h1>
 
-Your Vercel projects, live, in a terminal: who's on each site right now, what's deploying, what's failing, and what it all costs. It can cancel, redeploy, promote and roll back, each after you confirm, and it notifies you when a production deploy fails or traffic spikes.
+<p align="center">Your Vercel projects, live, in a terminal: who's on each site right now, what's deploying, what's failing, and what it all costs.</p>
+
+<p align="center"><img src="docs/ooze.gif" width="640" alt="ooze in 30 seconds: who's online, deploys as they happen, a traffic spike and its notification, spend against the credit, and a roll back that asks first"></p>
+
+ooze can cancel, redeploy, promote and roll back, each after you confirm, and it notifies you when a production deploy fails or traffic spikes. It's in the style of [sweep](https://github.com/pdcgomes/sweep) and [haunt](https://github.com/pdcgomes/haunt)'s hauntop, in Tokyo Night, and its creature is [badcoffee.dev](https://badcoffee.dev)'s Slime, which is shaped like a triangle. It isn't affiliated with Vercel.
 
 ![ooze: projects busiest first with who's online, deployments, billing with the Slime, and the feed](docs/screenshots/overview.png)
-
-ooze is in the style of [sweep](https://github.com/pdcgomes/sweep) and [haunt](https://github.com/pdcgomes/haunt)'s hauntop, in Tokyo Night, and its creature is [badcoffee.dev](https://badcoffee.dev)'s Slime, which is shaped like a triangle. It isn't affiliated with Vercel.
 
 ## Install
 
@@ -39,7 +41,11 @@ It watches the team `--team` names, else `team` in the settings, else the Vercel
 
 ## Details
 
-⏎ opens what's selected. A deployment's details have its commit, its URL, the actions that apply to it, and its build log, which follows a running build line by line. A project's have where its visitors came from in the last hour (pages, referrers, countries), its 5xx by route, its visitors over 7 and 30 days, and its recent deployments.
+⏎ opens what's selected. A project's details have where its visitors came from in the last hour (pages, referrers, countries), its 5xx by route, its visitors over 7 and 30 days, and its recent deployments.
+
+![A project's details: who's online, today, 7 and 30 days, its errors and cache, and its pages, referrers and countries in the last hour](docs/screenshots/project.png)
+
+A deployment's details have its commit, its URL, the actions that apply to it, and its build log, which follows a running build line by line.
 
 ![A running build's details: its commit, the actions that apply, and its log as it comes](docs/screenshots/deployment.png)
 
@@ -173,7 +179,7 @@ cargo run -- snapshot --demo --width 120 --height 40 --keys '\t\n'   # one frame
 python3 scripts/capture.py # the README's pictures, from the demo (pip install pyte pillow fonttools)
 ```
 
-`docs/plans/2026-10-15-ooze-design.md` is the design, with the endpoints it rests on.
+`docs/plans/2026-10-15-ooze-design.md` is the design, with the endpoints it rests on. The title at the top and the 30-second video are drawn with [pixelartvisuals](https://github.com/pdcgomes/pixelartvisuals)' kit, in its `projects/ooze`.
 
 ## License
 

@@ -335,6 +335,48 @@ impl Demo {
     }
 }
 
+/// Where a project's visitors came from, for its details in the demo.
+pub fn detail(project: &str, at: i64) -> crate::model::Detail {
+    let pairs = |rows: &[(&str, u64)]| rows.iter().map(|(k, n)| (k.to_string(), *n)).collect::<Vec<_>>();
+    match project {
+        "moth-radio" => crate::model::Detail {
+            at,
+            pages: pairs(&[
+                ("/", 412),
+                ("/episodes/night-shift-42", 186),
+                ("/episodes/the-lamp-room", 97),
+                ("/about", 31),
+                ("/rss.xml", 24),
+            ]),
+            referrers: pairs(&[
+                ("news.ycombinator.com", 318),
+                ("google.com", 104),
+                ("t.co", 51),
+                ("duckduckgo.com", 19),
+            ]),
+            countries: pairs(&[("US", 287), ("GB", 121), ("DE", 74), ("PT", 41), ("JP", 33)]),
+            errors: vec![],
+            week: Some((41_220, 12_840)),
+            month: Some((168_400, 51_900)),
+        },
+        "cave-notes" => crate::model::Detail {
+            at,
+            pages: pairs(&[("/", 64), ("/notes/tags", 38), ("/search", 17)]),
+            referrers: pairs(&[("google.com", 41), ("github.com", 12)]),
+            countries: pairs(&[("GB", 39), ("US", 30), ("FR", 11)]),
+            errors: vec![],
+            week: Some((10_240, 6_120)),
+            month: Some((44_800, 23_100)),
+        },
+        "grimoire-api" => crate::model::Detail {
+            at,
+            errors: pairs(&[("/api/spells/[id]", 14), ("/api/search", 5)]),
+            ..Default::default()
+        },
+        _ => crate::model::Detail { at, ..Default::default() },
+    }
+}
+
 /// A made-up build log, for a deployment's details in the demo.
 pub fn log(d: Option<&Deployment>) -> Vec<crate::model::LogLine> {
     let Some(d) = d else { return vec![] };

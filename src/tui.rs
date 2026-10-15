@@ -1118,7 +1118,7 @@ impl View {
     fn pair(&self, label: &str, value: impl Into<String>) -> Line<'static> {
         let t = &self.theme;
         Line::from(vec![
-            Span::styled(fmt::pad(label, 13), Style::new().fg(t.comment)),
+            Span::styled(fmt::pad(label, 15), Style::new().fg(t.comment)),
             Span::styled(value.into(), Style::new().fg(t.text)),
         ])
     }
@@ -1270,7 +1270,7 @@ impl View {
         lines.push(self.pair("state", state));
         if let Some(e) = &d.error_message {
             lines.push(Line::from(vec![
-                Span::styled(fmt::pad("error", 13), Style::new().fg(t.comment)),
+                Span::styled(fmt::pad("error", 15), Style::new().fg(t.comment)),
                 Span::styled(fmt::one_line(e), Style::new().fg(t.red)),
             ]));
         }
@@ -1665,9 +1665,16 @@ impl View {
         self.stick = true;
         self.overlay = match self.focus {
             Panel::Projects => self.project.clone().map(|id| {
-                let stale = self.world.details.get(&id).is_none_or(|d| self.now() - d.at > 60_000);
-                if let (Some(hub), true) = (&self.hub, stale) {
-                    hub.detail(&id);
+                let now = self.now();
+                let stale = self.world.details.get(&id).is_none_or(|d| now - d.at > 60_000);
+                match &self.hub {
+                    Some(hub) if stale => hub.detail(&id),
+                    None if stale => {
+                        let name = self.world.project_name(&id);
+                        self.world
+                            .apply(Msg::Detail { project: id.clone(), detail: crate::demo::detail(&name, now) }, now);
+                    }
+                    _ => {}
                 }
                 Overlay::Project(id)
             }),
@@ -2148,8 +2155,9 @@ mod tests {
         snapshot(&mut v, 160, 48);
         v.press("\n");
         let screen = snapshot(&mut v, 160, 48);
+        assert!(screen.contains("web analytics") && screen.contains("── referrers, last hour ──"), "{screen}");
         assert!(
-            screen.contains("web analytics") && screen.contains("Fetching where its visitors come from"),
+            screen.contains("news.ycombinator.com") && screen.contains("12,840 visitors · 41,220 page views"),
             "{screen}"
         );
         v.press("^\t\n");
