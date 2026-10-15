@@ -131,7 +131,10 @@ pub struct Detail {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
-    Who { user: User, teams: Vec<Team> },
+    Who {
+        user: User,
+        teams: Vec<Team>,
+    },
     Team(Team),
     Projects(Vec<Project>),
     Traffic(Traffic),
@@ -148,10 +151,21 @@ pub enum Msg {
     Alerts(Vec<AlertGroup>),
     Attacks(BTreeMap<String, Vec<Anomaly>>),
     Failed(Source, ApiError),
-    Log { deployment: String, lines: Vec<LogLine>, done: bool },
-    Detail { project: String, detail: Detail },
+    Log {
+        deployment: String,
+        lines: Vec<LogLine>,
+        done: bool,
+    },
+    Detail {
+        project: String,
+        detail: Detail,
+    },
     /// What an action did: its words for the feed, or why it couldn't.
-    Acted { project: String, deployment: String, said: Result<String, String> },
+    Acted {
+        project: String,
+        deployment: String,
+        said: Result<String, String>,
+    },
 }
 
 /// Something worth a notification.
@@ -300,7 +314,8 @@ impl World {
     /// Forgets the team's numbers, for watching another.
     pub fn switch(&mut self, now: i64) {
         let cfg = self.cfg.clone();
-        let (user, teams, status, link) = (self.user.take(), std::mem::take(&mut self.teams), self.status.take(), self.link.clone());
+        let (user, teams, status, link) =
+            (self.user.take(), std::mem::take(&mut self.teams), self.status.take(), self.link.clone());
         *self = World::new(now, cfg);
         (self.user, self.teams, self.status, self.link) = (user, teams, status, link);
     }
@@ -458,11 +473,21 @@ impl World {
             let who = d.name.clone();
             if d.production() && state == "ERROR" {
                 let why = d.error_message.clone().unwrap_or_else(|| "the build failed".into());
-                self.notify(self.cfg.notify.deploy_failed, format!("failed:{}", d.uid), format!("{who}: production deploy failed"), why);
+                self.notify(
+                    self.cfg.notify.deploy_failed,
+                    format!("failed:{}", d.uid),
+                    format!("{who}: production deploy failed"),
+                    why,
+                );
             }
             if d.production() && state == "READY" && before.is_some() {
                 let took = fmt::span(fmt::between(0, d.took(now)));
-                self.notify(self.cfg.notify.deploy_ready, format!("ready:{}", d.uid), format!("{who} is live"), format!("Built in {took}"));
+                self.notify(
+                    self.cfg.notify.deploy_ready,
+                    format!("ready:{}", d.uid),
+                    format!("{who} is live"),
+                    format!("Built in {took}"),
+                );
             }
         }
         for line in lines {
@@ -479,8 +504,17 @@ impl World {
             if e.kind == "deployment" || e.kind.starts_with("aliases") || e.text.is_empty() {
                 continue;
             }
-            let who = e.user.as_ref().and_then(|u| u.username.clone()).unwrap_or_else(|| self.team.as_ref().map(|t| t.slug.clone()).unwrap_or_default());
-            let line = Line::new(e.created_at, Kind::Team, "◆", Tone::Plain, who, fmt::one_line(&e.text)).detail("type", e.kind.clone());
+            let who = e
+                .user
+                .as_ref()
+                .and_then(|u| u.username.clone())
+                .unwrap_or_else(|| self.team.as_ref().map(|t| t.slug.clone()).unwrap_or_default());
+            // Vercel's text starts with who did it, which the line says already.
+            let text = fmt::one_line(&e.text);
+            let text = text.strip_prefix(&format!("{who} ")).map(str::to_string).unwrap_or(text);
+            let line = Line::new(e.created_at, Kind::Team, "◆", Tone::Plain, who, text)
+                .detail("type", e.kind.clone())
+                .detail("said", e.text.clone());
             self.push(line, now, !first);
         }
     }
@@ -493,9 +527,11 @@ impl World {
                 continue;
             }
             let who = g.project().map(|p| self.project_name(p)).unwrap_or_else(|| "Vercel".into());
-            let (tone, text) = if active { (Tone::Warn, g.title()) } else { (Tone::Good, format!("resolved: {}", g.title())) };
-            let mut line = Line::new(if active { g.started().unwrap_or(now) } else { now }, Kind::Vercel, "◇", tone, who, text)
-                .about(g.project().map(str::to_string), None);
+            let (tone, text) =
+                if active { (Tone::Warn, g.title()) } else { (Tone::Good, format!("resolved: {}", g.title())) };
+            let mut line =
+                Line::new(if active { g.started().unwrap_or(now) } else { now }, Kind::Vercel, "◇", tone, who, text)
+                    .about(g.project().map(str::to_string), None);
             if let Some(ai) = &g.ai {
                 line = line.detail("summary", ai.current_summary.clone().unwrap_or_default());
                 for f in &ai.key_findings {
@@ -517,15 +553,25 @@ impl World {
                 "critical" | "major" => Tone::Bad,
                 _ => Tone::Warn,
             };
-            let line = Line::new(now, Kind::Vercel, "●", tone, "Vercel", format!("{} · {}", i.name, i.status)).detail("link", i.shortlink.clone().unwrap_or_default());
+            let line = Line::new(now, Kind::Vercel, "●", tone, "Vercel", format!("{} · {}", i.name, i.status))
+                .detail("link", i.shortlink.clone().unwrap_or_default());
             self.push(line, now, !first);
             if i.status != "resolved" {
-                self.notify(self.cfg.notify.incident && !first, format!("incident:{}:{}", i.id, i.status), "Vercel has an incident", format!("{} ({})", i.name, i.status));
+                self.notify(
+                    self.cfg.notify.incident && !first,
+                    format!("incident:{}:{}", i.id, i.status),
+                    "Vercel has an incident",
+                    format!("{} ({})", i.name, i.status),
+                );
             }
         }
         let calm = s.status.indicator == "none";
         if !first && calm && self.indicator.as_deref() != Some("none") {
-            self.push(Line::new(now, Kind::Vercel, "●", Tone::Good, "Vercel", "all systems operational again"), now, true);
+            self.push(
+                Line::new(now, Kind::Vercel, "●", Tone::Good, "Vercel", "all systems operational again"),
+                now,
+                true,
+            );
         }
         self.indicator = Some(s.status.indicator.clone());
         self.status = Some(s);
@@ -536,7 +582,14 @@ impl World {
         let soon = self.cfg.thresholds.domain_days as i64 * 24 * 3600 * 1000;
         for d in &list {
             if d.misconfigured == Some(true) {
-                let line = Line::new(now, Kind::Domains, "◎", Tone::Warn, d.name.clone(), "is misconfigured: its DNS doesn't point at Vercel");
+                let line = Line::new(
+                    now,
+                    Kind::Domains,
+                    "◎",
+                    Tone::Warn,
+                    "domains",
+                    format!("{} is misconfigured: its DNS doesn't point at Vercel", d.name),
+                );
                 if self.notified.insert(format!("misconfigured:{}:{day}", d.name)) {
                     self.push(line, now, !first);
                 }
@@ -545,15 +598,30 @@ impl World {
                 let renews = d.renew == Some(true);
                 let text = match (exp > now, renews) {
                     (true, true) => format!("renews in {}", fmt::age(fmt::between(now, exp))),
-                    (true, false) => format!("expires in {} and won't renew by itself", fmt::age(fmt::between(now, exp))),
+                    (true, false) => {
+                        format!("expires in {} and won't renew by itself", fmt::age(fmt::between(now, exp)))
+                    }
                     (false, _) => "has expired".into(),
                 };
                 if self.notified.insert(format!("expiry-line:{}:{day}", d.name)) {
-                    self.push(Line::new(now, Kind::Domains, "◎", if renews { Tone::Plain } else { Tone::Warn }, d.name.clone(), text.clone()), now, !first);
+                    let line = Line::new(
+                        now,
+                        Kind::Domains,
+                        "◎",
+                        if renews { Tone::Plain } else { Tone::Warn },
+                        "domains",
+                        format!("{} {text}", d.name),
+                    );
+                    self.push(line, now, !first);
                 }
                 if !renews {
                     let key = format!("expiring:{}:{day}", d.name);
-                    self.notify(self.cfg.notify.domain_expiring && !first, key, format!("{} {text}", d.name), "Renew it in Vercel's dashboard");
+                    self.notify(
+                        self.cfg.notify.domain_expiring && !first,
+                        key,
+                        format!("{} {text}", d.name),
+                        "Renew it in Vercel's dashboard",
+                    );
                 }
             }
         }
@@ -568,9 +636,22 @@ impl World {
                     continue;
                 }
                 let who = self.project_name(project);
-                let line = Line::new(now, Kind::Errors, "⊘", Tone::Bad, who.clone(), "Vercel's firewall is mitigating an attack").about(Some(project.clone()), None);
+                let line = Line::new(
+                    now,
+                    Kind::Errors,
+                    "⊘",
+                    Tone::Bad,
+                    who.clone(),
+                    "Vercel's firewall is mitigating an attack",
+                )
+                .about(Some(project.clone()), None);
                 self.push(line, now, !first);
-                self.notify(self.cfg.notify.attack && !first, format!("attack:{key}"), format!("{who} is under attack"), "Vercel's firewall is mitigating it");
+                self.notify(
+                    self.cfg.notify.attack && !first,
+                    format!("attack:{key}"),
+                    format!("{who} is under attack"),
+                    "Vercel's firewall is mitigating it",
+                );
             }
         }
         self.attacks = attacks;
@@ -597,10 +678,27 @@ impl World {
             }
             self.spikes.insert(project.clone(), now);
             let who = self.project_name(&project);
-            let times = if usual >= 1.0 { format!("{:.0}× its usual", recent as f64 / usual) } else { "up from nothing".into() };
-            let text = format!("traffic {times} · {} in 5 min, {online} online", fmt::count(recent, "page view", "page views"));
-            self.push(Line::new(now, Kind::Traffic, "↑", Tone::Up, who.clone(), text.clone()).about(Some(project.clone()), None), now, !first);
-            self.notify(self.cfg.notify.traffic_spike && !first, format!("spike:{project}:{}", now / SPIKE_QUIET), format!("{who}: traffic spike"), text);
+            let times = if usual >= 1.0 {
+                format!("{:.0}× its usual", recent as f64 / usual)
+            } else {
+                "up from nothing".into()
+            };
+            let text = format!(
+                "traffic {times} · {} in 5 min, {online} online",
+                fmt::count(recent, "page view", "page views")
+            );
+            self.push(
+                Line::new(now, Kind::Traffic, "↑", Tone::Up, who.clone(), text.clone())
+                    .about(Some(project.clone()), None),
+                now,
+                !first,
+            );
+            self.notify(
+                self.cfg.notify.traffic_spike && !first,
+                format!("spike:{project}:{}", now / SPIKE_QUIET),
+                format!("{who}: traffic spike"),
+                text,
+            );
         }
     }
 
@@ -621,9 +719,23 @@ impl World {
             }
             self.error_spikes.insert(project.clone(), now);
             let who = self.project_name(&project);
-            let text = format!("5xx on {} of {} requests in 5 min", fmt::percent(failed as f64 / total as f64), fmt::num(total));
-            self.push(Line::new(now, Kind::Errors, "!", Tone::Bad, who.clone(), text.clone()).about(Some(project.clone()), None), now, !first);
-            self.notify(self.cfg.notify.error_spike && !first, format!("errors:{project}:{}", now / SPIKE_QUIET), format!("{who}: errors"), text);
+            let text = format!(
+                "5xx on {} of {} requests in 5 min",
+                fmt::percent(failed as f64 / total as f64),
+                fmt::num(total)
+            );
+            self.push(
+                Line::new(now, Kind::Errors, "!", Tone::Bad, who.clone(), text.clone())
+                    .about(Some(project.clone()), None),
+                now,
+                !first,
+            );
+            self.notify(
+                self.cfg.notify.error_spike && !first,
+                format!("errors:{project}:{}", now / SPIKE_QUIET),
+                format!("{who}: errors"),
+                text,
+            );
         }
     }
 
@@ -636,7 +748,8 @@ impl World {
             return;
         }
         let key = format!("credit:{}:{}", team.id, spend.period.start);
-        let text = format!("usage passed the {} credit: {} so far this period", fmt::money(credit), fmt::money(usage));
+        let text =
+            format!("usage passed the {} credit: {} so far this period", fmt::dollars(credit), fmt::money(usage));
         if !self.notified.contains(&key) {
             let team_name = team.slug.clone();
             self.push(Line::new(now, Kind::Spend, "$", Tone::Warn, team_name, text.clone()), now, !first);
@@ -659,7 +772,9 @@ impl World {
             r.online == 0
                 && r.hour < self.cfg.quiet_below.max(1)
                 && !r.attack
-                && r.production.as_ref().is_none_or(|p| p.state != "BUILDING" && p.state != "QUEUED" && !(p.state == "ERROR" && now - p.at < 3600 * 1000))
+                && r.production.as_ref().is_none_or(|p| {
+                    p.state != "BUILDING" && p.state != "QUEUED" && !(p.state == "ERROR" && now - p.at < 3600 * 1000)
+                })
         };
         let folded = rows.iter().filter(|r| quiet(r)).count();
         rows.retain(|r| !quiet(r));
@@ -679,7 +794,9 @@ impl World {
             let total: u64 = h.requests.get(&p.id).map(|r| r.iter().rev().take(15).sum()).unwrap_or(0);
             (total > 0).then(|| failed as f64 / total as f64)
         });
-        let cache = h.and_then(|h| h.cache.get(&p.id)).and_then(|(hit, miss)| (hit + miss > 0).then(|| *hit as f64 / (hit + miss) as f64));
+        let cache = h
+            .and_then(|h| h.cache.get(&p.id))
+            .and_then(|(hit, miss)| (hit + miss > 0).then(|| *hit as f64 / (hit + miss) as f64));
         Row {
             id: p.id.clone(),
             name: p.name.clone(),
@@ -691,7 +808,10 @@ impl World {
             errors,
             cache,
             blocked: h.and_then(|h| h.blocked.get(&p.id)).copied().unwrap_or(0),
-            attack: self.attacks.get(&p.id).is_some_and(|a| a.iter().any(|a| a.end_time.is_none_or(|e| crate::vercel::millis(e) > now))),
+            attack: self
+                .attacks
+                .get(&p.id)
+                .is_some_and(|a| a.iter().any(|a| a.end_time.is_none_or(|e| crate::vercel::millis(e) > now))),
             production: self.production(p),
         }
     }
@@ -706,19 +826,35 @@ impl World {
             .filter(|d| d.production() && d.state() == "READY" && d.project_id.as_deref() == Some(p.id.as_str()))
             .filter(|d| d.ready_substate.as_deref() != Some("STAGED"))
             .max_by_key(|d| d.ready.unwrap_or(d.created));
-        if let Some(r) = p.last_alias_request.as_ref().filter(|r| r.job_status.as_deref() != Some("failed") && r.to_deployment_id.is_some()) {
+        if let Some(r) = p
+            .last_alias_request
+            .as_ref()
+            .filter(|r| r.job_status.as_deref() != Some("failed") && r.to_deployment_id.is_some())
+        {
             let since_promote = newest.is_some_and(|d| d.ready.unwrap_or(d.created) > r.requested_at.unwrap_or(0));
             if r.kind.as_deref() == Some("rollback") || !since_promote {
                 return r.to_deployment_id.clone();
             }
         }
-        newest.map(|d| d.uid.clone()).or_else(|| p.production().filter(|c| c.ready_state.as_deref() == Some("READY")).map(|c| c.id.clone()))
+        newest
+            .map(|d| d.uid.clone())
+            .or_else(|| p.production().filter(|c| c.ready_state.as_deref() == Some("READY")).map(|c| c.id.clone()))
     }
 
     fn production(&self, p: &Project) -> Option<Prod> {
         // A newer production build that's running or failed shows over the one serving.
-        if let Some(d) = self.deployments.iter().find(|d| d.production() && d.project_id.as_deref() == Some(p.id.as_str())).filter(|d| d.running() || d.state() == "ERROR") {
-            return Some(Prod { uid: d.uid.clone(), state: d.state().into(), at: d.ready.unwrap_or(d.created), since: d.building_at.unwrap_or(d.created) });
+        if let Some(d) = self
+            .deployments
+            .iter()
+            .find(|d| d.production() && d.project_id.as_deref() == Some(p.id.as_str()))
+            .filter(|d| d.running() || d.state() == "ERROR")
+        {
+            return Some(Prod {
+                uid: d.uid.clone(),
+                state: d.state().into(),
+                at: d.ready.unwrap_or(d.created),
+                since: d.building_at.unwrap_or(d.created),
+            });
         }
         let serving = self.serving(p)?;
         let at = match self.find(&serving) {
@@ -755,7 +891,11 @@ impl World {
             visitors: self.today.values().map(|(v, _)| v).sum(),
             views: self.today.values().map(|(_, v)| v).sum(),
             building: self.deployments.iter().filter(|d| d.running()).count(),
-            failed_today: self.deployments.iter().filter(|d| d.production() && d.state() == "ERROR" && local_day(d.created) == today).count(),
+            failed_today: self
+                .deployments
+                .iter()
+                .filter(|d| d.production() && d.state() == "ERROR" && local_day(d.created) == today)
+                .count(),
             usage: self.spend.as_ref().map(Spend::usage),
             credit: self.team.as_ref().and_then(billing::credit),
         }
@@ -763,19 +903,29 @@ impl World {
 
     /// Whether something on screen moves: a build's clock, a line easing in.
     pub fn moving(&self, now: i64) -> bool {
-        self.deployments.iter().any(|d| d.running()) || self.feed.back().is_some_and(|l| now - l.arrived < 2_000) || now - self.stirred < 1_500
+        self.deployments.iter().any(|d| d.running())
+            || self.feed.back().is_some_and(|l| now - l.arrived < 2_000)
+            || now - self.stirred < 1_500
     }
 
     /// Something needs looking at: the header's border goes orange.
     pub fn troubled(&self, now: i64) -> bool {
-        let failed = self.deployments.iter().any(|d| d.production() && d.state() == "ERROR" && now - d.created < 3600 * 1000 && !self.fixed_since(d));
+        let failed = self
+            .deployments
+            .iter()
+            .any(|d| d.production() && d.state() == "ERROR" && now - d.created < 3600 * 1000 && !self.fixed_since(d));
         let incident = self.status.as_ref().is_some_and(|s| !matches!(s.status.indicator.as_str(), "none" | ""));
-        failed || incident || self.attacks.values().any(|a| !a.is_empty()) || self.error_spikes.values().any(|at| now - at < SPIKE_QUIET)
+        failed
+            || incident
+            || self.attacks.values().any(|a| !a.is_empty())
+            || self.error_spikes.values().any(|at| now - at < SPIKE_QUIET)
     }
 
     /// A newer production deployment of the same project went live after it.
     fn fixed_since(&self, d: &Deployment) -> bool {
-        self.deployments.iter().any(|o| o.production() && o.project_id == d.project_id && o.created > d.created && o.state() == "READY")
+        self.deployments
+            .iter()
+            .any(|o| o.production() && o.project_id == d.project_id && o.created > d.created && o.state() == "READY")
     }
 
     pub fn find(&self, uid: &str) -> Option<&Deployment> {
@@ -783,7 +933,10 @@ impl World {
     }
 
     pub fn project_of(&self, d: &Deployment) -> Option<&Project> {
-        d.project_id.as_deref().and_then(|id| self.projects.iter().find(|p| p.id == id)).or_else(|| self.project_id(&d.name).and_then(|id| self.projects.iter().find(|p| p.id == id)))
+        d.project_id
+            .as_deref()
+            .and_then(|id| self.projects.iter().find(|p| p.id == id))
+            .or_else(|| self.project_id(&d.name).and_then(|id| self.projects.iter().find(|p| p.id == id)))
     }
 }
 
@@ -795,11 +948,15 @@ fn local_day(at: i64) -> Option<chrono::NaiveDate> {
 /// The lines a deployment's change of state makes, each at when it happened.
 pub fn deployment_lines(d: &Deployment, before: Option<&str>, now: i64) -> Vec<Line> {
     let env = d.environment();
-    let git = [d.branch(), d.commit().map(|s| fmt::sha(&s)), d.message().map(|m| format!("\"{}\"", fmt::fit_end(&fmt::one_line(&m), 48)))]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let git = [
+        d.branch(),
+        d.commit().map(|s| fmt::sha(&s)),
+        d.message().map(|m| format!("\"{}\"", fmt::fit_end(&fmt::one_line(&m), 48))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
     let by = d.author().map(|a| format!(" · {a}")).unwrap_or_default();
     let line = |at: i64, glyph, tone, text: String| {
         Line::new(at, Kind::Deploys, glyph, tone, d.name.clone(), text)
@@ -808,24 +965,43 @@ pub fn deployment_lines(d: &Deployment, before: Option<&str>, now: i64) -> Vec<L
             .detail("url", d.url.clone().map(|u| format!("https://{u}")).unwrap_or_default())
     };
     let started = || {
-        let what = if git.is_empty() { format!("{env} build started{by}") } else { format!("{env} build started · {git}{by}") };
+        let what = if git.is_empty() {
+            format!("{env} build started{by}")
+        } else {
+            format!("{env} build started · {git}{by}")
+        };
         line(d.building_at.unwrap_or(d.created), "▸", Tone::Work, what)
     };
     let took = fmt::span(fmt::between(0, d.took(now)));
     let end = d.ready.unwrap_or(now);
     match d.state() {
         // A running deployment's line is when it's first seen; queued to building says nothing new.
-        "BUILDING" | "QUEUED" | "INITIALIZING" => if before.is_none() { vec![started()] } else { vec![] },
+        "BUILDING" | "QUEUED" | "INITIALIZING" => {
+            if before.is_none() {
+                vec![started()]
+            } else {
+                vec![]
+            }
+        }
         "READY" => {
             let mut v = vec![];
             if before.is_none() && d.building_at.is_some() {
                 v.push(started());
             }
-            v.push(line(end, "✓", Tone::Good, format!("{env} ready in {took}{}", if git.is_empty() { String::new() } else { format!(" · {git}") })));
+            v.push(line(
+                end,
+                "✓",
+                Tone::Good,
+                format!("{env} ready in {took}{}", if git.is_empty() { String::new() } else { format!(" · {git}") }),
+            ));
             v
         }
         "ERROR" => {
-            let why = d.error_message.clone().map(|m| fmt::one_line(&m)).unwrap_or_else(|| d.error_code.clone().unwrap_or_else(|| "it failed".into()));
+            let why = d
+                .error_message
+                .clone()
+                .map(|m| fmt::one_line(&m))
+                .unwrap_or_else(|| d.error_code.clone().unwrap_or_else(|| "it failed".into()));
             let mut v = vec![];
             if before.is_none() && d.building_at.is_some() {
                 v.push(started());
@@ -868,12 +1044,22 @@ pub mod tests {
     #[test]
     fn a_deployment_feeds_a_line_as_it_starts_and_finishes_and_a_failure_notifies() {
         let mut w = world();
-        w.apply(Msg::Deployments(vec![deployment("d0", "moth-radio", "READY", Some("production"), NOW - 3600_000)]), NOW);
+        w.apply(
+            Msg::Deployments(vec![deployment("d0", "moth-radio", "READY", Some("production"), NOW - 3_600_000)]),
+            NOW,
+        );
         let seeded = w.feed.len();
         assert_eq!(seeded, 2, "what happened earlier starts the feed: {:?}", w.feed);
         assert!(w.feed.iter().all(|l| l.arrived == 0) && w.notices.is_empty(), "and doesn't notify");
-        w.apply(Msg::Deployments(vec![deployment("d1", "cave-notes", "BUILDING", Some("production"), NOW)]), NOW + 1_000);
-        assert!(w.feed.back().unwrap().text.starts_with("production build started · main a1b2c3d \"Fix search\" · pat"), "{:?}", w.feed.back());
+        w.apply(
+            Msg::Deployments(vec![deployment("d1", "cave-notes", "BUILDING", Some("production"), NOW)]),
+            NOW + 1_000,
+        );
+        assert!(
+            w.feed.back().unwrap().text.starts_with("production build started · main a1b2c3d \"Fix search\" · pat"),
+            "{:?}",
+            w.feed.back()
+        );
         w.apply(Msg::Deployments(vec![deployment("d1", "cave-notes", "ERROR", Some("production"), NOW)]), NOW + 80_000);
         let last = w.feed.back().unwrap();
         assert_eq!(last.text, "production build failed: Command \"npm run build\" exited with 1");
@@ -891,11 +1077,18 @@ pub mod tests {
         for m in &mut minutes[MINUTES - 5..] {
             *m = 20;
         }
-        let traffic = |m: Vec<u64>| Traffic { end: NOW, views: BTreeMap::from([("prj_moth-radio".to_string(), m)]), online: BTreeMap::from([("prj_moth-radio".to_string(), 18)]) };
+        let traffic = |m: Vec<u64>| Traffic {
+            end: NOW,
+            views: BTreeMap::from([("prj_moth-radio".to_string(), m)]),
+            online: BTreeMap::from([("prj_moth-radio".to_string(), 18)]),
+        };
         w.apply(Msg::Traffic(traffic(vec![2; MINUTES])), NOW - 10_000);
         w.apply(Msg::Traffic(traffic(minutes.clone())), NOW);
         let line = w.feed.back().unwrap();
-        assert_eq!((line.who.as_str(), line.text.as_str()), ("moth-radio", "traffic 10× its usual · 100 page views in 5 min, 18 online"));
+        assert_eq!(
+            (line.who.as_str(), line.text.as_str()),
+            ("moth-radio", "traffic 10× its usual · 100 page views in 5 min, 18 online")
+        );
         assert_eq!(w.notices.len(), 1);
         w.apply(Msg::Traffic(traffic(minutes)), NOW + 10_000);
         assert_eq!(w.notices.len(), 1, "not again for half an hour");
@@ -910,14 +1103,25 @@ pub mod tests {
         let mut views = BTreeMap::new();
         views.insert("prj_moth-radio".to_string(), vec![3; MINUTES]);
         views.insert("prj_cave-notes".to_string(), vec![1; MINUTES]);
-        w.apply(Msg::Traffic(Traffic { end: NOW, views, online: BTreeMap::from([("prj_cave-notes".into(), 4), ("prj_moth-radio".into(), 2)]) }), NOW);
+        w.apply(
+            Msg::Traffic(Traffic {
+                end: NOW,
+                views,
+                online: BTreeMap::from([("prj_cave-notes".into(), 4), ("prj_moth-radio".into(), 2)]),
+            }),
+            NOW,
+        );
         let mut h = Health::default();
         h.requests.insert("prj_moth-radio".into(), vec![10; MINUTES]);
         h.errors.insert("prj_moth-radio".into(), vec![1; 15]);
         h.cache.insert("prj_moth-radio".into(), (90, 10));
         w.apply(Msg::Health(h), NOW);
         let (rows, folded) = w.rows(NOW, false);
-        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["cave-notes", "moth-radio"], "most online first");
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["cave-notes", "moth-radio"],
+            "most online first"
+        );
         assert_eq!(folded, 1, "lamp-docs has nothing going on");
         let moth = &rows[1];
         assert_eq!((moth.hour, moth.minutes.len(), moth.errors, moth.cache), (180, SHOWN, Some(0.1), Some(0.9)));
@@ -979,10 +1183,31 @@ pub mod tests {
     #[test]
     fn team_activity_feeds_lines_but_not_deployments_twice() {
         let mut w = world();
-        let ev = |id: &str, kind: &str, text: &str| Event { id: id.into(), kind: kind.into(), text: text.into(), created_at: NOW, user: None };
-        w.apply(Msg::Events(vec![ev("e1", "deployment", "pat deployed moth-radio"), ev("e2", "env-variable-updated", "pat updated API_URL in cave-notes")]), NOW);
+        let ev = |id: &str, kind: &str, text: &str| Event {
+            id: id.into(),
+            kind: kind.into(),
+            text: text.into(),
+            created_at: NOW,
+            user: None,
+        };
+        w.apply(
+            Msg::Events(vec![
+                ev("e1", "deployment", "pat deployed moth-radio"),
+                ev("e2", "env-variable-updated", "pat updated API_URL in cave-notes"),
+            ]),
+            NOW,
+        );
         assert_eq!(w.feed.len(), 1);
-        assert_eq!(w.feed[0].text, "pat updated API_URL in cave-notes");
+        assert_eq!(w.feed[0].text, "pat updated API_URL in cave-notes", "with nobody named, the text stays whole");
+        let mut named = world();
+        named.apply(
+            Msg::Events(vec![Event {
+                user: Some(crate::vercel::EventUser { username: Some("pat".into()) }),
+                ..ev("e3", "env-variable-updated", "pat updated API_URL in cave-notes")
+            }]),
+            NOW,
+        );
+        assert_eq!((named.feed[0].who.as_str(), named.feed[0].text.as_str()), ("pat", "updated API_URL in cave-notes"));
         w.apply(Msg::Events(vec![ev("e2", "env-variable-updated", "pat updated API_URL in cave-notes")]), NOW);
         assert_eq!(w.feed.len(), 1, "an event is fed once");
     }
@@ -998,7 +1223,7 @@ pub mod tests {
         assert!(w.feed.is_empty());
         spend.days.insert(1, billing::Day { usage: 13.31, ..billing::Day::default() });
         w.apply(Msg::Billing(spend.clone()), NOW + 1);
-        assert_eq!(w.feed.back().unwrap().text, "usage passed the $20.00 credit: $25.31 so far this period");
+        assert_eq!(w.feed.back().unwrap().text, "usage passed the $20 credit: $25.31 so far this period");
         w.apply(Msg::Billing(spend), NOW + 2);
         assert_eq!(w.notices.len(), 1);
         assert_eq!(w.glance(NOW).credit, Some(20.0));
@@ -1012,8 +1237,20 @@ pub mod tests {
         let mut spend = Spend { team: "team_1".into(), ..Spend::default() };
         spend.days.insert(0, billing::Day { usage: 25.0, ..billing::Day::default() });
         w.apply(Msg::Billing(spend), NOW);
-        let incident = crate::vercel::Incident { id: "i1".into(), name: "Builds delayed".into(), status: "investigating".into(), impact: "minor".into(), ..Default::default() };
-        w.apply(Msg::Status(StatusPage { status: crate::vercel::Indicator { indicator: "minor".into(), description: String::new() }, incidents: vec![incident] }), NOW);
+        let incident = crate::vercel::Incident {
+            id: "i1".into(),
+            name: "Builds delayed".into(),
+            status: "investigating".into(),
+            impact: "minor".into(),
+            ..Default::default()
+        };
+        w.apply(
+            Msg::Status(StatusPage {
+                status: crate::vercel::Indicator { indicator: "minor".into(), description: String::new() },
+                incidents: vec![incident],
+            }),
+            NOW,
+        );
         assert_eq!(w.feed.len(), 2);
         assert!(w.feed.iter().all(|l| l.arrived == 0));
         assert!(w.notices.is_empty(), "{:?}", w.notices);

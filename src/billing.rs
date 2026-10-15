@@ -203,7 +203,11 @@ fn cache_file(dir: &Path, team: &str) -> PathBuf {
 pub fn refresh(api: &Api, team: &str, period: Period, cache: &Path, now: i64) -> Result<Spend, ApiError> {
     let file = cache_file(cache, team);
     let kept: Option<Spend> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
-    let mut spend = kept.filter(|s| s.period == period && s.team == team).unwrap_or(Spend { team: team.into(), period, ..Spend::default() });
+    let mut spend = kept.filter(|s| s.period == period && s.team == team).unwrap_or(Spend {
+        team: team.into(),
+        period,
+        ..Spend::default()
+    });
     let from = spend.days.keys().rev().nth(1).copied().unwrap_or(period.start).max(period.start);
     let mut rows = Vec::new();
     vercel::charges(api, from, now, |c| rows.push(c))?;
@@ -286,7 +290,10 @@ mod tests {
         let s = spend();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(cache_file(dir.path(), "team_1"), serde_json::to_vec(&s).unwrap()).unwrap();
-        let rows = [charge("2026-10-04", "Usage", "Fast Data Transfer", Some("moth-radio"), 5.0), charge("2026-10-05", "Usage", "Edge Requests", None, 1.0)];
+        let rows = [
+            charge("2026-10-04", "Usage", "Fast Data Transfer", Some("moth-radio"), 5.0),
+            charge("2026-10-05", "Usage", "Edge Requests", None, 1.0),
+        ];
         let body = rows.iter().map(|r| serde_json::to_string(r).unwrap()).collect::<Vec<_>>().join("\n");
         let f = crate::api::tests::fake(vec![(200, vec![], body)]);
         let now = s.period.start + 3 * DAY;

@@ -1,6 +1,9 @@
 # ooze: design
 
-15 October 2026. The screen was reviewed; the rest is the plan being built.
+15 October 2026. The screen was reviewed; the rest was built as planned, with two corrections that real data forced:
+
+- **The plan's own fee isn't usage.** Billing charges count the Pro plan as a day-by-day subscription (service category "Subscription Licenses"), so ooze leaves the plan and seats out of the usage it measures against the included credit, and lists them apart.
+- **`targets.production` isn't what serves production.** It's a project's latest production deployment in any state, canceled ones included. ooze takes the deployment serving production from the project's `lastAliasRequest` (the last promote or roll back) and the newest ready production deployment.
 
 ## What it is
 

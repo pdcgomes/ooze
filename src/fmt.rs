@@ -82,6 +82,16 @@ pub fn money(usd: f64) -> String {
     }
 }
 
+/// "$20", "$68", "$3.20": whole dollars where cents add nothing, for
+/// projections and prices.
+pub fn dollars(usd: f64) -> String {
+    if usd.abs() >= 10.0 || (usd.fract().abs() < 0.005 && usd != 0.0) {
+        format!("{}${}", if usd < 0.0 { "−" } else { "" }, num(usd.abs().round() as u64))
+    } else {
+        money(usd)
+    }
+}
+
 /// "94%", "1.2%", "<0.1%", "0%": a share, from 0 to 1.
 pub fn percent(ratio: f64) -> String {
     let p = ratio * 100.0;
@@ -104,7 +114,8 @@ pub fn between(from: i64, to: i64) -> Duration {
 /// "18:02", or "yesterday 18:02", or "12 Oct 18:02", in local time.
 pub fn when(at: i64, now: i64) -> String {
     use chrono::{Local, TimeZone};
-    let (Some(at), Some(now)) = (Local.timestamp_millis_opt(at).single(), Local.timestamp_millis_opt(now).single()) else {
+    let (Some(at), Some(now)) = (Local.timestamp_millis_opt(at).single(), Local.timestamp_millis_opt(now).single())
+    else {
         return String::new();
     };
     let days = (now.date_naive() - at.date_naive()).num_days();
@@ -206,6 +217,10 @@ mod tests {
         assert_eq!(money(0.001), "<$0.01");
         assert_eq!(money(0.0), "$0");
         assert_eq!(money(-5.31), "−$5.31");
+        assert_eq!(dollars(20.0), "$20");
+        assert_eq!(dollars(68.21), "$68");
+        assert_eq!(dollars(3.2), "$3.20");
+        assert_eq!(dollars(1_204.4), "$1,204");
         assert_eq!(percent(0.94), "94%");
         assert_eq!(percent(0.012), "1.2%");
         assert_eq!(percent(0.0004), "<0.1%");

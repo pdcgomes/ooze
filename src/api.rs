@@ -89,7 +89,13 @@ pub fn bucket(path: &str) -> String {
 
 impl Api {
     pub fn new(auth: Arc<Auth>, base: &str) -> Api {
-        Api { agent: agent_for(base), auth, base: base.trim_end_matches('/').to_string(), team: None, limits: Arc::default() }
+        Api {
+            agent: agent_for(base),
+            auth,
+            base: base.trim_end_matches('/').to_string(),
+            team: None,
+            limits: Arc::default(),
+        }
     }
 
     pub fn for_team(&self, team: Option<String>) -> Api {
@@ -164,7 +170,8 @@ impl Api {
                     "PATCH" => self.agent.patch(&url),
                     _ => self.agent.put(&url),
                 };
-                let req = req.header("Authorization", &bearer).query_pairs(pairs).config().timeout_global(timeout).build();
+                let req =
+                    req.header("Authorization", &bearer).query_pairs(pairs).config().timeout_global(timeout).build();
                 match body {
                     Some(b) => req.send_json(b),
                     None => req.send_empty(),
@@ -175,8 +182,14 @@ impl Api {
     }
 
     /// Notes the rate limit, and turns an unhappy answer into an error.
-    fn check(&self, path: &str, mut resp: ureq::http::Response<ureq::Body>) -> Result<ureq::http::Response<ureq::Body>, ApiError> {
-        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<i64>().ok());
+    fn check(
+        &self,
+        path: &str,
+        mut resp: ureq::http::Response<ureq::Body>,
+    ) -> Result<ureq::http::Response<ureq::Body>, ApiError> {
+        let header = |name: &str| {
+            resp.headers().get(name).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<i64>().ok())
+        };
         let limit = match (header("x-ratelimit-limit"), header("x-ratelimit-remaining"), header("x-ratelimit-reset")) {
             (Some(limit), Some(remaining), Some(reset)) => {
                 let l = Limit { limit: limit.max(0) as u64, remaining: remaining.max(0) as u64, reset: reset * 1000 };
@@ -198,7 +211,11 @@ impl Api {
             404 => ApiError::NotFound(why),
             429 => {
                 let now = chrono::Utc::now().timestamp_millis();
-                let until = limit.map(|l| l.reset).filter(|r| *r > now).or(retry.map(|s| now + s * 1000)).unwrap_or(now + 60_000);
+                let until = limit
+                    .map(|l| l.reset)
+                    .filter(|r| *r > now)
+                    .or(retry.map(|s| now + s * 1000))
+                    .unwrap_or(now + 60_000);
                 ApiError::Limited(until)
             }
             _ => ApiError::Status(status, why),
@@ -215,7 +232,12 @@ impl Api {
         read_json(&mut resp)
     }
 
-    pub fn patch<T: DeserializeOwned>(&self, path: &str, query: &[(&str, String)], body: Option<&Value>) -> Result<T, ApiError> {
+    pub fn patch<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<T, ApiError> {
         let mut resp = self.call("PATCH", path, query, body, Some(TIMEOUT))?;
         read_json(&mut resp)
     }
@@ -242,7 +264,8 @@ impl Api {
 }
 
 fn read_json<T: DeserializeOwned>(resp: &mut ureq::http::Response<ureq::Body>) -> Result<T, ApiError> {
-    let text = resp.body_mut().with_config().limit(MOST).read_to_string().map_err(|e| ApiError::Network(network(&e)))?;
+    let text =
+        resp.body_mut().with_config().limit(MOST).read_to_string().map_err(|e| ApiError::Network(network(&e)))?;
     // Some actions answer with nothing at all.
     let text = if text.trim().is_empty() { "null" } else { &text };
     serde_json::from_str(text).map_err(|e| ApiError::Decode(e.to_string()))
@@ -291,7 +314,10 @@ pub mod tests {
         pub seen: Arc<Mutex<Vec<String>>>,
     }
 
-    pub fn fake(answers: Vec<(u16, Vec<(&'static str, String)>, String)>) -> Fake {
+    /// A status, headers and a body.
+    pub type Answer = (u16, Vec<(&'static str, String)>, String);
+
+    pub fn fake(answers: Vec<Answer>) -> Fake {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -326,7 +352,9 @@ pub mod tests {
         let Some((head, body)) = text.split_once("\r\n\r\n") else { return false };
         let len = head
             .lines()
-            .find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+            .find_map(|l| {
+                l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))
+            })
             .unwrap_or(0);
         body.len() >= len
     }
@@ -350,9 +378,17 @@ pub mod tests {
     #[test]
     fn errors_say_what_vercel_said_and_rate_limits_are_kept() {
         let reset = chrono::Utc::now().timestamp() + 30;
-        let limits = vec![("x-ratelimit-limit", "100".to_string()), ("x-ratelimit-remaining", "0".into()), ("x-ratelimit-reset", reset.to_string())];
+        let limits = vec![
+            ("x-ratelimit-limit", "100".to_string()),
+            ("x-ratelimit-remaining", "0".into()),
+            ("x-ratelimit-reset", reset.to_string()),
+        ];
         let f = fake(vec![
-            (403, vec![], r#"{"error":{"code":"forbidden","message":"You don't have permission to view billing."}}"#.into()),
+            (
+                403,
+                vec![],
+                r#"{"error":{"code":"forbidden","message":"You don't have permission to view billing."}}"#.into(),
+            ),
             (429, limits, r#"{"error":{"code":"rate_limited"}}"#.into()),
             (401, vec![], r#"{"error":{"code":"forbidden","message":"Not authorized"}}"#.into()),
         ]);
@@ -388,4 +424,3 @@ pub mod tests {
         assert_eq!(bucket("/v7/deployments"), "v7/deployments");
     }
 }
-

@@ -87,7 +87,7 @@ fn desktop(title: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// OSC 9, which iTerm2, Ghostty, WezTerm, kitty and Windows Terminal show.
+/// OSC 9, which iTerm2, Ghostty and WezTerm show.
 fn terminal(title: &str, body: &str) -> bool {
     use std::io::Write;
     let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();

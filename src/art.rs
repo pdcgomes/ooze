@@ -172,16 +172,16 @@ const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 /// minute reads as a gap.
 pub fn sparkline(values: &[u64]) -> String {
     let most = values.iter().copied().max().unwrap_or(0).max(1);
-    values
-        .iter()
-        .map(|&v| if v == 0 { ' ' } else { BARS[((v as f64 / most as f64) * 7.0).round() as usize] })
-        .collect()
+    values.iter().map(|&v| if v == 0 { ' ' } else { BARS[((v as f64 / most as f64) * 7.0).round() as usize] }).collect()
 }
 
 /// A thin meter, `w` wide and `ratio` full.
 pub fn meter(ratio: f64, w: usize, fill: Color, theme: &Theme) -> Vec<Span<'static>> {
     let full = ((ratio.clamp(0.0, 1.0) * w as f64).round() as usize).min(w);
-    vec![Span::styled("━".repeat(full), Style::new().fg(fill)), Span::styled("─".repeat(w - full), Style::new().fg(theme.gutter))]
+    vec![
+        Span::styled("━".repeat(full), Style::new().fg(fill)),
+        Span::styled("─".repeat(w - full), Style::new().fg(theme.gutter)),
+    ]
 }
 
 /// A colour for a project, the same every time, so a project's rows stand together.

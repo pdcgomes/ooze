@@ -13,7 +13,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [Kind::Deploys, Kind::Traffic, Kind::Errors, Kind::Vercel, Kind::Team, Kind::Domains, Kind::Spend];
+    pub const ALL: [Kind; 7] =
+        [Kind::Deploys, Kind::Traffic, Kind::Errors, Kind::Vercel, Kind::Team, Kind::Domains, Kind::Spend];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -56,8 +57,26 @@ pub struct Line {
 }
 
 impl Line {
-    pub fn new(at: i64, kind: Kind, glyph: &'static str, tone: Tone, who: impl Into<String>, text: impl Into<String>) -> Line {
-        Line { at, kind, glyph, tone, who: who.into(), text: text.into(), detail: vec![], deployment: None, project: None, arrived: 0 }
+    pub fn new(
+        at: i64,
+        kind: Kind,
+        glyph: &'static str,
+        tone: Tone,
+        who: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Line {
+        Line {
+            at,
+            kind,
+            glyph,
+            tone,
+            who: who.into(),
+            text: text.into(),
+            detail: vec![],
+            deployment: None,
+            project: None,
+            arrived: 0,
+        }
     }
 
     pub fn detail(mut self, key: &str, value: impl Into<String>) -> Line {

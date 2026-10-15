@@ -81,7 +81,9 @@ pub fn truecolor() -> bool {
         return true;
     }
     let program = var("TERM_PROGRAM");
-    if ["iterm.app", "ghostty", "wezterm", "vscode", "hyper", "tabby", "rio", "warpterminal"].contains(&program.as_str()) {
+    if ["iterm.app", "ghostty", "wezterm", "vscode", "hyper", "tabby", "rio", "warpterminal"]
+        .contains(&program.as_str())
+    {
         return true;
     }
     let term = var("TERM");
@@ -160,6 +162,7 @@ impl Paint {
         Paint { on: std::io::stdout().is_terminal() && !no_color(), truecolor: truecolor() }
     }
 
+    #[cfg(test)]
     pub fn off() -> Paint {
         Paint { on: false, truecolor: false }
     }

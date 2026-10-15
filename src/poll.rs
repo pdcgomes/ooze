@@ -60,6 +60,8 @@ fn now() -> i64 {
 }
 
 type Fetch = fn(&Hub, &Api, &str) -> Result<Msg, ApiError>;
+/// How long a source waits before fetching again.
+type Every = fn(&Hub) -> Duration;
 
 impl Hub {
     /// A hub with nothing running, for fetching once.
@@ -72,13 +74,17 @@ impl Hub {
     pub fn start(api: Api, cfg: Config, home: Home, prefer: Option<String>) -> (Hub, Receiver<Envelope>) {
         let (hub, rx) = Hub::idle(api, cfg, home);
         hub.spawn_who(prefer);
-        let sources: [(Source, fn(&Hub) -> Duration, Fetch); 14] = [
+        let sources: [(Source, Every, Fetch); 14] = [
             (Source::Team, |_| Duration::from_secs(600), fetch_team),
             (Source::Projects, |_| Duration::from_secs(300), fetch_projects),
             (Source::Traffic, |h| h.observing(Duration::from_secs(h.cfg.refresh.max(5))), fetch_traffic),
             (Source::Today, |h| h.observing(Duration::from_secs(300)), fetch_today),
             (Source::Health, |h| h.observing(Duration::from_secs(30)), fetch_health),
-            (Source::Deployments, |h| Duration::from_secs(if h.shared.busy.load(Ordering::Relaxed) { 5 } else { 15 }), fetch_deployments),
+            (
+                Source::Deployments,
+                |h| Duration::from_secs(if h.shared.busy.load(Ordering::Relaxed) { 5 } else { 15 }),
+                fetch_deployments,
+            ),
             (Source::Billing, |_| Duration::from_secs(1800), fetch_billing),
             (Source::Ai, |h| h.observing(Duration::from_secs(300)), fetch_ai),
             (Source::Budgets, |_| Duration::from_secs(1800), fetch_budgets),
@@ -136,8 +142,11 @@ impl Hub {
     fn nap(&self, source: Source, d: Duration) -> bool {
         let guard = self.shared.clock.lock().unwrap();
         let generation = guard.generation;
-        let (mut guard, _) =
-            self.shared.bell.wait_timeout_while(guard, d, |c| c.generation == generation && !c.pokes.contains(&source) && !c.stop).unwrap();
+        let (mut guard, _) = self
+            .shared
+            .bell
+            .wait_timeout_while(guard, d, |c| c.generation == generation && !c.pokes.contains(&source) && !c.stop)
+            .unwrap();
         guard.pokes.remove(&source);
         !guard.stop
     }
@@ -146,7 +155,7 @@ impl Hub {
         self.tx.send(Envelope { generation, msg }).is_ok()
     }
 
-    fn spawn(&self, source: Source, every: fn(&Hub) -> Duration, fetch: Fetch) {
+    fn spawn(&self, source: Source, every: Every, fetch: Fetch) {
         let hub = self.clone();
         let name = format!("ooze-{source:?}").to_lowercase();
         std::thread::Builder::new()
@@ -253,7 +262,10 @@ impl Hub {
                     batch.push(LogLine { at: e.payload.date.or(e.created), text, error: e.kind == "stderr" });
                 }
                 if running && last.elapsed() > Duration::from_millis(300) && !batch.is_empty() {
-                    hub.send(generation, Msg::Log { deployment: uid.clone(), lines: std::mem::take(&mut batch), done: false });
+                    hub.send(
+                        generation,
+                        Msg::Log { deployment: uid.clone(), lines: std::mem::take(&mut batch), done: false },
+                    );
                     last = std::time::Instant::now();
                 }
                 hub.shared.following.lock().unwrap().as_deref() == Some(uid.as_str())
@@ -310,7 +322,12 @@ pub fn choose(teams: &[Team], prefer: Option<&str>, cli: Option<&str>, default: 
     if let Some(p) = prefer.filter(|p| !p.is_empty()) {
         return teams.iter().find(|t| t.id == p || t.slug == p || t.name.as_deref() == Some(p)).map(|t| t.id.clone());
     }
-    [cli, default].into_iter().flatten().find_map(|id| teams.iter().find(|t| t.id == id)).or(teams.first()).map(|t| t.id.clone())
+    [cli, default]
+        .into_iter()
+        .flatten()
+        .find_map(|id| teams.iter().find(|t| t.id == id))
+        .or(teams.first())
+        .map(|t| t.id.clone())
 }
 
 /// Buckets of a minute each, by project, `n` of them from `start`.
@@ -341,7 +358,10 @@ fn totals(points: &[Point]) -> BTreeMap<String, u64> {
 pub fn local_midnight(now: i64) -> i64 {
     use chrono::{Local, TimeZone};
     let Some(day) = Local.timestamp_millis_opt(now).single().map(|d| d.date_naive()) else { return now - now % DAY };
-    day.and_hms_opt(0, 0, 0).and_then(|d| Local.from_local_datetime(&d).earliest()).map(|d| d.timestamp_millis()).unwrap_or(now - now % DAY)
+    day.and_hms_opt(0, 0, 0)
+        .and_then(|d| Local.from_local_datetime(&d).earliest())
+        .map(|d| d.timestamp_millis())
+        .unwrap_or(now - now % DAY)
 }
 
 fn fetch_team(hub: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
@@ -361,7 +381,10 @@ fn fetch_traffic(_: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     let views = vercel::observe(api, &Query::new(PAGEVIEWS, "sum", scope.clone(), start, end, 1).by("project_id"))?;
     // Online is over the last five minutes, this one included; one-minute
     // buckets keep the range exactly that.
-    let online = vercel::observe(api, &Query::new(PAGEVIEWS, "unique/visitor_id", scope, end + MINUTE - 5 * MINUTE, end + MINUTE, 1).by("project_id"))?;
+    let online = vercel::observe(
+        api,
+        &Query::new(PAGEVIEWS, "unique/visitor_id", scope, end + MINUTE - 5 * MINUTE, end + MINUTE, 1).by("project_id"),
+    )?;
     Ok(Msg::Traffic(Traffic { end, views: series(&views.data, start, MINUTES), online: totals(&online.summary) }))
 }
 
@@ -381,7 +404,10 @@ fn fetch_today(_: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     let (visitors, views) = (totals(&visitors.summary), totals(&views.summary));
     let mut out = BTreeMap::new();
     for project in visitors.keys().chain(views.keys()) {
-        out.insert(project.clone(), (visitors.get(project).copied().unwrap_or(0), views.get(project).copied().unwrap_or(0)));
+        out.insert(
+            project.clone(),
+            (visitors.get(project).copied().unwrap_or(0), views.get(project).copied().unwrap_or(0)),
+        );
     }
     Ok(Msg::Today(out))
 }
@@ -396,10 +422,24 @@ fn fetch_health(hub: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     let scope = Scope::Team(team.into());
     let requests = vercel::observe(api, &Query::new(REQUESTS, "sum", scope.clone(), start, end, 1).by("project_id"))?;
     let recent = end - 15 * MINUTE;
-    let errors = vercel::observe(api, &Query::new(REQUESTS, "sum", scope.clone(), recent, end, 1).by("project_id").filter("http_status ge 500"))?;
-    let cache = vercel::observe(api, &Query::new(REQUESTS, "sum", scope.clone(), recent, end, 15).by("project_id").by("cache_result"))?;
-    let firewall = vercel::observe(api, &Query::new("vercel.firewall_action.count", "sum", scope, start, end, 60).by("project_id").by("waf_action"))?;
-    let mut h = Health { end, requests: series(&requests.data, start, MINUTES), errors: series(&errors.data, recent, 15), ..Health::default() };
+    let errors = vercel::observe(
+        api,
+        &Query::new(REQUESTS, "sum", scope.clone(), recent, end, 1).by("project_id").filter("http_status ge 500"),
+    )?;
+    let cache = vercel::observe(
+        api,
+        &Query::new(REQUESTS, "sum", scope.clone(), recent, end, 15).by("project_id").by("cache_result"),
+    )?;
+    let firewall = vercel::observe(
+        api,
+        &Query::new("vercel.firewall_action.count", "sum", scope, start, end, 60).by("project_id").by("waf_action"),
+    )?;
+    let mut h = Health {
+        end,
+        requests: series(&requests.data, start, MINUTES),
+        errors: series(&errors.data, recent, 15),
+        ..Health::default()
+    };
     for p in &cache.summary {
         let e = h.cache.entry(p.group("project_id").to_string()).or_insert((0, 0));
         let n = p.value.max(0.0) as u64;
@@ -412,7 +452,8 @@ fn fetch_health(hub: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     for p in firewall.summary.iter().filter(|p| BLOCKED.contains(&p.group("waf_action"))) {
         *h.blocked.entry(p.group("project_id").to_string()).or_insert(0) += p.value.max(0.0) as u64;
     }
-    let mut busiest: Vec<(&String, u64)> = h.requests.iter().map(|(p, v)| (p, v.iter().sum())).filter(|(_, n)| *n > 0).collect();
+    let mut busiest: Vec<(&String, u64)> =
+        h.requests.iter().map(|(p, v)| (p, v.iter().sum())).filter(|(_, n)| *n > 0).collect();
     busiest.sort_by(|a, b| b.1.cmp(&a.1));
     *hub.shared.active.lock().unwrap() = busiest.into_iter().take(10).map(|(p, _)| p.clone()).collect();
     Ok(Msg::Health(h))
@@ -428,7 +469,10 @@ fn fetch_billing(hub: &Hub, api: &Api, team: &str) -> Result<Msg, ApiError> {
     let known = *hub.shared.period.lock().unwrap();
     let period = match known {
         Some(p) => p,
-        None => vercel::team(api, team)?.billing.and_then(|b| b.period).ok_or_else(|| ApiError::NotFound("this team has no billing period".into()))?,
+        None => vercel::team(api, team)?
+            .billing
+            .and_then(|b| b.period)
+            .ok_or_else(|| ApiError::NotFound("this team has no billing period".into()))?,
     };
     Ok(Msg::Billing(billing::refresh(api, team, period, &hub.home.cache, now())?))
 }
@@ -450,7 +494,8 @@ fn fetch_domains(_: &Hub, api: &Api, _: &str) -> Result<Msg, ApiError> {
         .into_iter()
         .enumerate()
         .map(|(i, d)| {
-            let misconfigured = if i < 25 { vercel::domain_config(api, &d.name).ok().map(|c| c.misconfigured) } else { None };
+            let misconfigured =
+                if i < 25 { vercel::domain_config(api, &d.name).ok().map(|c| c.misconfigured) } else { None };
             DomainState { name: d.name, expires_at: d.expires_at, renew: d.renew, misconfigured }
         })
         .collect();
@@ -492,7 +537,11 @@ fn fetch_detail(api: &Api, team: &str, project: &str) -> Result<Detail, ApiError
         if let Some(f) = filter {
             q = q.filter(f);
         }
-        let mut v: Vec<(String, u64)> = vercel::observe(api, &q)?.summary.iter().map(|p| (p.group(by).to_string(), p.value.max(0.0) as u64)).collect();
+        let mut v: Vec<(String, u64)> = vercel::observe(api, &q)?
+            .summary
+            .iter()
+            .map(|p| (p.group(by).to_string(), p.value.max(0.0) as u64))
+            .collect();
         v.retain(|(k, n)| !k.is_empty() && *n > 0);
         v.sort_by(|a, b| b.1.cmp(&a.1));
         Ok(v)
@@ -530,8 +579,12 @@ pub fn once(api: Api, cfg: Config, home: Home, prefer: Option<String>) -> Result
         (Source::Alerts, fetch_alerts),
     ];
     let results: Vec<(Source, Result<Msg, ApiError>)> = std::thread::scope(|s| {
-        let handles: Vec<_> = fetches.iter().map(|(source, fetch)| (*source, s.spawn(|| fetch(&hub, &scoped, &team)))).collect();
-        handles.into_iter().map(|(source, h)| (source, h.join().unwrap_or_else(|_| Err(ApiError::Decode("a fetch panicked".into()))))).collect()
+        let handles: Vec<_> =
+            fetches.iter().map(|(source, fetch)| (*source, s.spawn(|| fetch(&hub, &scoped, &team)))).collect();
+        handles
+            .into_iter()
+            .map(|(source, h)| (source, h.join().unwrap_or_else(|_| Err(ApiError::Decode("a fetch panicked".into())))))
+            .collect()
     });
     let mut w = World::new(started, cfg);
     w.apply(Msg::Who { user, teams }, started);
@@ -563,7 +616,11 @@ mod tests {
         let t = teams();
         assert_eq!(choose(&t, Some("day-job"), Some("team_a"), None).as_deref(), Some("team_b"));
         assert_eq!(choose(&t, Some("Night Shift"), None, None).as_deref(), Some("team_a"));
-        assert_eq!(choose(&t, Some("nobody"), None, None), None, "a team asked for that isn't there is an error, not another team");
+        assert_eq!(
+            choose(&t, Some("nobody"), None, None),
+            None,
+            "a team asked for that isn't there is an error, not another team"
+        );
         assert_eq!(choose(&t, None, Some("team_b"), Some("team_a")).as_deref(), Some("team_b"));
         assert_eq!(choose(&t, None, Some("team_gone"), Some("team_a")).as_deref(), Some("team_a"));
         assert_eq!(choose(&t, None, None, None).as_deref(), Some("team_a"));
@@ -572,8 +629,16 @@ mod tests {
     #[test]
     fn buckets_land_in_their_minute() {
         let start = 1_000 * MINUTE;
-        let p = |at: i64, project: &str, v: f64| Point { at: Some(at), value: v, groups: BTreeMap::from([("project_id".to_string(), project.to_string())]) };
-        let s = series(&[p(start, "a", 3.0), p(start + 2 * MINUTE, "a", 1.0), p(start + 9 * MINUTE, "a", 7.0), p(start, "", 1.0)], start, 5);
+        let p = |at: i64, project: &str, v: f64| Point {
+            at: Some(at),
+            value: v,
+            groups: BTreeMap::from([("project_id".to_string(), project.to_string())]),
+        };
+        let s = series(
+            &[p(start, "a", 3.0), p(start + 2 * MINUTE, "a", 1.0), p(start + 9 * MINUTE, "a", 7.0), p(start, "", 1.0)],
+            start,
+            5,
+        );
         assert_eq!(s["a"], [3, 0, 1, 0, 0], "outside the range, or without a project, is left out");
         assert_eq!(s.len(), 1);
     }
@@ -591,7 +656,8 @@ mod tests {
     #[test]
     fn switching_teams_wakes_the_sources_and_moves_the_generation_on() {
         let dir = tempfile::tempdir().unwrap();
-        let (hub, _rx) = Hub::idle(crate::api::tests::api("http://127.0.0.1:9"), Config::default(), Home::under(dir.path()));
+        let (hub, _rx) =
+            Hub::idle(crate::api::tests::api("http://127.0.0.1:9"), Config::default(), Home::under(dir.path()));
         let napping = {
             let hub = hub.clone();
             std::thread::spawn(move || {

@@ -11,9 +11,15 @@ use serde_json::{Value, json};
 fn production(r: &Row, w: &World, now: i64) -> String {
     let Some(p) = &r.production else { return "no production deployment".into() };
     match p.state.as_str() {
-        "BUILDING" | "QUEUED" | "INITIALIZING" => format!("production building {}", fmt::clock(fmt::between(p.since, now))),
+        "BUILDING" | "QUEUED" | "INITIALIZING" => {
+            format!("production building {}", fmt::clock(fmt::between(p.since, now)))
+        }
         "ERROR" => {
-            let why = w.find(&p.uid).and_then(|d| d.error_message.clone()).map(|m| format!(": {}", fmt::fit_end(&fmt::one_line(&m), 80))).unwrap_or_default();
+            let why = w
+                .find(&p.uid)
+                .and_then(|d| d.error_message.clone())
+                .map(|m| format!(": {}", fmt::fit_end(&fmt::one_line(&m), 80)))
+                .unwrap_or_default();
             format!("production failed {}{why}", fmt::ago(fmt::between(p.at, now)))
         }
         "CANCELED" => format!("production canceled {}", fmt::ago(fmt::between(p.at, now))),
@@ -28,7 +34,10 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
         out.push('\n');
     };
     let label = |s: &str| p.fg(hex::COMMENT, format!("{s:<9}"));
-    let team = w.team.as_ref().map(|t| format!("{}{}", t.title(), t.plan().map(|pl| format!(" ({})", capitalised(pl))).unwrap_or_default()));
+    let team = w
+        .team
+        .as_ref()
+        .map(|t| format!("{}{}", t.title(), t.plan().map(|pl| format!(" ({})", capitalised(pl))).unwrap_or_default()));
     line(format!("{} · {} · {}", p.bold("ooze"), team.unwrap_or_else(|| "no team".into()), fmt::when(now, now)));
     let g = w.glance(now);
     line(format!(
@@ -65,12 +74,21 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
             parts.push(p.fg(hex::RED, "under attack"));
         }
         let prod = production(r, w, now);
-        let prod = if prod.contains("failed") { p.fg(hex::RED, prod) } else if prod.contains("building") { p.fg(hex::BLUE, prod) } else { prod };
+        let prod = if prod.contains("failed") {
+            p.fg(hex::RED, prod)
+        } else if prod.contains("building") {
+            p.fg(hex::BLUE, prod)
+        } else {
+            prod
+        };
         parts.push(prod);
         line(format!("  {}  {}", fmt::pad(&r.name, name_w), parts.join(" · ")));
     }
     if folded > 0 {
-        line(format!("  {}", p.fg(hex::COMMENT, format!("+ {}", fmt::count(folded as u64, "quiet project", "quiet projects")))));
+        line(format!(
+            "  {}",
+            p.fg(hex::COMMENT, format!("+ {}", fmt::count(folded as u64, "quiet project", "quiet projects")))
+        ));
     }
     line(format!("{}{} building · {} failed in production today", label("deploys"), g.building, g.failed_today));
     for d in w.deploy_rows().into_iter().take(6) {
@@ -80,22 +98,43 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
             "CANCELED" => ("■", hex::COMMENT),
             _ => ("▸", hex::BLUE),
         };
-        let when = if d.running() { fmt::clock(fmt::between(d.building_at.unwrap_or(d.created), now)) } else { fmt::ago(fmt::between(d.ready.unwrap_or(d.created), now)) };
-        let git = [d.branch(), d.message().map(|m| format!("\"{}\"", fmt::fit_end(&fmt::one_line(&m), 50)))].into_iter().flatten().collect::<Vec<_>>().join(" ");
+        let when = if d.running() {
+            fmt::clock(fmt::between(d.building_at.unwrap_or(d.created), now))
+        } else {
+            fmt::ago(fmt::between(d.ready.unwrap_or(d.created), now))
+        };
+        let git = [d.branch(), d.message().map(|m| format!("\"{}\"", fmt::fit_end(&fmt::one_line(&m), 50)))]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
         let current = if w.is_current(d) { " · current" } else { "" };
-        line(format!("  {} {} {} {} {when}{current} · {git}", p.fg(colour, glyph), d.name, d.environment(), d.state().to_lowercase()));
+        line(format!(
+            "  {} {} {} {} {when}{current} · {git}",
+            p.fg(colour, glyph),
+            d.name,
+            d.environment(),
+            d.state().to_lowercase()
+        ));
     }
     if let (Some(team), Some(spend)) = (&w.team, &w.spend) {
         let usage = spend.usage();
-        let credit = billing::credit(team).map(|c| format!(" of the {} credit ({})", fmt::money(c), fmt::percent(usage / c.max(0.01)))).unwrap_or_default();
-        let projected = spend.projected().map(|v| format!(" · projected {} by {}", fmt::money(v), fmt::day(spend.period.end))).unwrap_or_default();
+        let credit = billing::credit(team)
+            .map(|c| format!(" of the {} credit ({})", fmt::money(c), fmt::percent(usage / c.max(0.01))))
+            .unwrap_or_default();
+        let projected = spend
+            .projected()
+            .map(|v| format!(" · projected {} by {}", fmt::money(v), fmt::day(spend.period.end)))
+            .unwrap_or_default();
         let through = spend.latest().map(|t| format!(" · charges to {}", fmt::day(t))).unwrap_or_default();
         line(format!("{}usage {}{credit}{projected}{through}", label("spend"), fmt::money(usage)));
-        let top: Vec<String> = spend.services().into_iter().take(4).map(|(s, c)| format!("{s} {}", fmt::money(c))).collect();
+        let top: Vec<String> =
+            spend.services().into_iter().take(4).map(|(s, c)| format!("{s} {}", fmt::money(c))).collect();
         if !top.is_empty() {
             line(format!("  {}", top.join(" · ")));
         }
-        let fixed: Vec<String> = billing::fixed(team).into_iter().map(|(n, c)| format!("{n} {}", fmt::money(c))).collect();
+        let fixed: Vec<String> =
+            billing::fixed(team).into_iter().map(|(n, c)| format!("{n} {}", fmt::money(c))).collect();
         if !fixed.is_empty() {
             line(format!("  {} a month", fixed.join(" · ")));
         }
@@ -103,10 +142,19 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
         line(format!("{}{e}", label("spend")));
     }
     if let Some(ai) = &w.ai.as_ref().filter(|a| a.requests_today > 0) {
-        line(format!("{}{} today · {}", label("AI"), fmt::money(ai.cost_today), fmt::count(ai.requests_today, "request", "requests")));
+        line(format!(
+            "{}{} today · {}",
+            label("AI"),
+            fmt::money(ai.cost_today),
+            fmt::count(ai.requests_today, "request", "requests")
+        ));
     }
     if let Some(s) = &w.status {
-        let said = if s.incidents.is_empty() { s.status.description.to_lowercase() } else { s.incidents.iter().map(|i| format!("{} ({})", i.name, i.status)).collect::<Vec<_>>().join(" · ") };
+        let said = if s.incidents.is_empty() {
+            s.status.description.to_lowercase()
+        } else {
+            s.incidents.iter().map(|i| format!("{} ({})", i.name, i.status)).collect::<Vec<_>>().join(" · ")
+        };
         line(format!("{}{said}", label("vercel")));
     }
     let warned: Vec<String> = w
@@ -116,7 +164,9 @@ pub fn text(w: &World, now: i64, p: Paint) -> String {
             if d.misconfigured == Some(true) {
                 Some(format!("{} is misconfigured", d.name))
             } else {
-                d.expires_at.filter(|e| e - now < w.cfg.thresholds.domain_days as i64 * 86_400_000).map(|e| format!("{} expires {}", d.name, fmt::day(e)))
+                d.expires_at
+                    .filter(|e| e - now < w.cfg.thresholds.domain_days as i64 * 86_400_000)
+                    .map(|e| format!("{} expires {}", d.name, fmt::day(e)))
             }
         })
         .collect();
@@ -165,7 +215,8 @@ pub fn json(w: &World, now: i64) -> Value {
         .collect();
     let spend = w.spend.as_ref().map(|s| {
         json!({
-            "period": {"start": s.period.start, "end": s.period.end}, "usage": s.usage(), "billed": s.billed(), "other": s.other(),
+            "period": {"start": s.period.start, "end": s.period.end}, "usage": s.usage(), "subscriptions": s.subscriptions(),
+            "billed": s.billed(), "other": s.other(),
             "credit": w.team.as_ref().and_then(billing::credit), "projected": s.projected(), "through": s.through(),
             "services": s.services().into_iter().map(|(n, c)| json!({"service": n, "cost": c})).collect::<Vec<_>>(),
             "projects": s.projects().into_iter().map(|(n, c)| json!({"project": n, "cost": c})).collect::<Vec<_>>(),
@@ -185,4 +236,29 @@ pub fn json(w: &World, now: i64) -> Value {
         "domains": w.domains.iter().map(|d| json!({"name": d.name, "expires_at": d.expires_at, "renews": d.renew, "misconfigured": d.misconfigured})).collect::<Vec<_>>(),
         "errors": w.failed.iter().map(|(s, (_, e))| json!({"source": s.name(), "error": e.to_string()})).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::tests::NOW;
+
+    #[test]
+    fn a_glance_in_words_and_as_json() {
+        let w = crate::demo::world(NOW);
+        let said = text(&w, NOW, Paint::off());
+        assert!(said.starts_with("ooze · night-shift (Pro) · "), "{said}");
+        assert!(said.contains("moth-radio") && said.contains("production building"), "{said}");
+        assert!(said.contains("production failed 5 min ago: Command \"npm run build\" exited with 1"), "{said}");
+        assert!(
+            said.contains("of the $20.00 credit") && said.contains("Pro plan $20.00 · extra seats $20.00 a month"),
+            "{said}"
+        );
+        assert!(said.contains("+ 7 quiet projects"), "{said}");
+        assert!(said.contains("night-market.shop expires"), "{said}");
+        let j = json(&w, NOW);
+        assert_eq!(j["team"]["slug"], "night-shift");
+        assert!(j["deployments"].as_array().unwrap().iter().any(|d| d["state"] == "BUILDING"));
+        assert!(j["spend"]["usage"].as_f64().unwrap() > j["spend"]["credit"].as_f64().unwrap());
+    }
 }

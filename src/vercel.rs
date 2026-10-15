@@ -397,8 +397,26 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn new(metric: &'static str, aggregation: &'static str, scope: Scope, start: i64, end: i64, minutes: i64) -> Query {
-        Query { metric, aggregation, group_by: vec![], filter: None, start, end, minutes, limit: 100, scope, timezone: None }
+    pub fn new(
+        metric: &'static str,
+        aggregation: &'static str,
+        scope: Scope,
+        start: i64,
+        end: i64,
+        minutes: i64,
+    ) -> Query {
+        Query {
+            metric,
+            aggregation,
+            group_by: vec![],
+            filter: None,
+            start,
+            end,
+            minutes,
+            limit: 100,
+            scope,
+            timezone: None,
+        }
     }
 
     pub fn by(mut self, dimension: &'static str) -> Query {
@@ -412,7 +430,9 @@ impl Query {
     }
 
     fn body(&self) -> Value {
-        let iso = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let iso = |ms: i64| {
+            chrono::DateTime::from_timestamp_millis(ms).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        };
         let scope = match &self.scope {
             Scope::Team(owner) => json!({ "type": "owner", "ownerId": owner }),
             Scope::Projects(owner, ids) => json!({ "type": "project", "ownerId": owner, "projectIds": ids }),
@@ -498,7 +518,9 @@ pub fn parse_time(s: &str) -> Option<i64> {
 }
 
 pub fn iso(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).unwrap_or_default()
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_default()
 }
 
 pub fn observe(api: &Api, q: &Query) -> Result<Observed> {
@@ -530,10 +552,14 @@ pub fn projects(api: &Api) -> Result<Vec<Project>> {
             q.push(("from", f.clone()));
         }
         let v: Value = api.get("/v10/projects", &q)?;
-        let page: Vec<Project> = serde_json::from_value(v["projects"].clone()).map_err(|e| ApiError::Decode(e.to_string()))?;
+        let page: Vec<Project> =
+            serde_json::from_value(v["projects"].clone()).map_err(|e| ApiError::Decode(e.to_string()))?;
         let done = page.len() < 100;
         all.extend(page);
-        from = v["pagination"]["next"].as_i64().map(|n| n.to_string()).or(v["pagination"]["next"].as_str().map(str::to_string));
+        from = v["pagination"]["next"]
+            .as_i64()
+            .map(|n| n.to_string())
+            .or(v["pagination"]["next"].as_str().map(str::to_string));
         if done || from.is_none() {
             break;
         }
@@ -662,8 +688,15 @@ mod tests {
             "statistics": {"rowsRead": 10}
         }"#;
         let f = fake(vec![(200, vec![], answer.into())]);
-        let q = Query::new("vercel.analytics_pageview.count", "unique/visitor_id", Scope::Team("team_1".into()), 1_792_086_000_000, 1_792_086_300_000, 5)
-            .by("project_id");
+        let q = Query::new(
+            "vercel.analytics_pageview.count",
+            "unique/visitor_id",
+            Scope::Team("team_1".into()),
+            1_792_086_000_000,
+            1_792_086_300_000,
+            5,
+        )
+        .by("project_id");
         let got = observe(&api(&f.base), &q).unwrap();
         assert_eq!(got.summary.len(), 1);
         assert_eq!((got.summary[0].value, got.summary[0].group("project_id")), (18.0, "prj_a"));
@@ -695,7 +728,10 @@ mod tests {
             "creator": {"uid": "u1", "username": "pat-v"}
         }))
         .unwrap();
-        assert_eq!((d.branch().as_deref(), d.message().as_deref(), d.author().as_deref()), (Some("main"), Some("Fix the player\n\nIt skipped"), Some("Pat")));
+        assert_eq!(
+            (d.branch().as_deref(), d.message().as_deref(), d.author().as_deref()),
+            (Some("main"), Some("Fix the player\n\nIt skipped"), Some("Pat"))
+        );
         assert_eq!(d.took(99_000), 72_000);
         assert!(d.production() && !d.running());
         let queued: Deployment = serde_json::from_value(json!({"uid": "dpl_2", "name": "x", "created": 5})).unwrap();
@@ -704,9 +740,13 @@ mod tests {
 
     #[test]
     fn projects_know_whether_web_analytics_is_on() {
-        let p: Project = serde_json::from_value(json!({"id": "p", "name": "n", "webAnalytics": {"id": "w", "enabledAt": 1}})).unwrap();
+        let p: Project =
+            serde_json::from_value(json!({"id": "p", "name": "n", "webAnalytics": {"id": "w", "enabledAt": 1}}))
+                .unwrap();
         assert!(p.analytics());
-        let off: Project = serde_json::from_value(json!({"id": "p", "name": "n", "webAnalytics": {"enabledAt": 1, "disabledAt": 2}})).unwrap();
+        let off: Project =
+            serde_json::from_value(json!({"id": "p", "name": "n", "webAnalytics": {"enabledAt": 1, "disabledAt": 2}}))
+                .unwrap();
         assert!(!off.analytics());
     }
 
@@ -739,7 +779,10 @@ mod tests {
         let api = api(&f.base);
         for _ in 0..2 {
             let g = alerts(&api, 0, 1).unwrap();
-            assert_eq!((g[0].title(), g[0].active(), g[0].started()), ("5xx spike on /api".into(), true, Some(1_792_080_000_000)));
+            assert_eq!(
+                (g[0].title(), g[0].active(), g[0].started()),
+                ("5xx spike on /api".into(), true, Some(1_792_080_000_000))
+            );
         }
     }
 
@@ -756,6 +799,9 @@ mod tests {
         let mut got = vec![];
         charges(&api(&f.base), 0, 86_400_000, |c| got.push(c)).unwrap();
         assert_eq!(got.len(), 2);
-        assert_eq!((got[0].service_name.as_str(), got[0].effective_cost, got[0].tags["ProjectName"].as_str()), ("Fast Data Transfer", 1.25, "moth-radio"));
+        assert_eq!(
+            (got[0].service_name.as_str(), got[0].effective_cost, got[0].tags["ProjectName"].as_str()),
+            ("Fast Data Transfer", 1.25, "moth-radio")
+        );
     }
 }

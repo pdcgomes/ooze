@@ -73,7 +73,11 @@ impl Auth {
         if let Ok(text) = std::fs::read_to_string(&saved)
             && !text.trim().is_empty()
         {
-            return Ok(Auth { source: Source::Saved(saved), held: held(text.trim().to_string(), None), vercel: vercel.into() });
+            return Ok(Auth {
+                source: Source::Saved(saved),
+                held: held(text.trim().to_string(), None),
+                vercel: vercel.into(),
+            });
         }
         let cli = home.vercel_cli.join("auth.json");
         if let Some((token, expires)) = read_cli(&cli) {
@@ -113,7 +117,9 @@ impl Auth {
     fn renew(&self) -> Result<String> {
         let Source::Cli(path) = &self.source else { bail!("only the Vercel CLI's login can be renewed") };
         let before = self.held.lock().unwrap().token.clone();
-        if let Err(e) = run_with_timeout(Command::new(&self.vercel).args(["whoami", "--non-interactive"]), RENEW_TIMEOUT) {
+        if let Err(e) =
+            run_with_timeout(Command::new(&self.vercel).args(["whoami", "--non-interactive"]), RENEW_TIMEOUT)
+        {
             bail!(
                 "the Vercel CLI's login has expired and `vercel whoami` couldn't renew it ({e:#}): `vercel login` signs in \
                  again, or `ooze login` uses a token instead"
@@ -214,7 +220,10 @@ mod tests {
         let auth = home.vercel_cli.join("auth.json");
         let later = now() + 3_600_000;
         let body = if renews {
-            format!("#!/bin/sh\nprintf '{{\"token\":\"renewed\",\"expiresAt\":{later}}}' > '{}'\necho someone\n", auth.display())
+            format!(
+                "#!/bin/sh\nprintf '{{\"token\":\"renewed\",\"expiresAt\":{later}}}' > '{}'\necho someone\n",
+                auth.display()
+            )
         } else {
             "#!/bin/sh\necho 'Error: The specified token is not valid' >&2\nexit 1\n".to_string()
         };
@@ -228,7 +237,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::under(dir.path());
         cli_auth(&home, "from-cli", now() + 3_600_000);
-        assert_eq!(Auth::resolve_with(None, &home, "false").unwrap().source, Source::Cli(home.vercel_cli.join("auth.json")));
+        assert_eq!(
+            Auth::resolve_with(None, &home, "false").unwrap().source,
+            Source::Cli(home.vercel_cli.join("auth.json"))
+        );
         crate::config::write_private(&home.token(), "saved\n").unwrap();
         let saved = Auth::resolve_with(None, &home, "false").unwrap();
         assert_eq!((saved.source.clone(), saved.token().unwrap()), (Source::Saved(home.token()), "saved".into()));
@@ -242,7 +254,11 @@ mod tests {
         let home = Home::under(dir.path());
         cli_auth(&home, "fresh", now() + 3_600_000);
         let vercel = fake_vercel(&home, false);
-        assert_eq!(Auth::resolve_with(None, &home, &vercel).unwrap().token().unwrap(), "fresh", "no need to run the CLI");
+        assert_eq!(
+            Auth::resolve_with(None, &home, &vercel).unwrap().token().unwrap(),
+            "fresh",
+            "no need to run the CLI"
+        );
     }
 
     #[test]
@@ -263,7 +279,12 @@ mod tests {
         let vercel = fake_vercel(&home, false);
         let err = format!("{:#}", Auth::resolve_with(None, &home, &vercel).unwrap_err());
         assert!(err.contains("token is not valid") && err.contains("`vercel login` signs in again"), "{err}");
-        assert!(Auth::resolve_with(None, &Home::under(&dir.path().join("nobody")), &vercel).unwrap_err().to_string().contains("ooze login"));
+        assert!(
+            Auth::resolve_with(None, &Home::under(&dir.path().join("nobody")), &vercel)
+                .unwrap_err()
+                .to_string()
+                .contains("ooze login")
+        );
     }
 
     #[test]

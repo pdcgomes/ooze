@@ -57,10 +57,18 @@ pub fn check(action: Action, d: &Deployment, w: &World) -> Result<(), String> {
         Action::Cancel if !d.running() => Err("only a build that's queued or running can be canceled".into()),
         Action::Redeploy if d.running() => Err("it's still building".into()),
         Action::Promote | Action::Rollback if d.state() != "READY" => Err("it isn't ready".into()),
-        Action::Promote | Action::Rollback if current_id.as_deref() == Some(&d.uid) => Err("it's already serving production".into()),
-        Action::Rollback if !d.production() => Err("only an earlier production deployment can be rolled back to; P promotes a preview".into()),
-        Action::Rollback if current(w, d).is_some_and(|c| c.created < d.created) => Err("it's newer than production: P promotes it".into()),
-        Action::Promote | Action::Rollback if w.project_of(d).is_none() => Err("ooze doesn't know its project yet".into()),
+        Action::Promote | Action::Rollback if current_id.as_deref() == Some(&d.uid) => {
+            Err("it's already serving production".into())
+        }
+        Action::Rollback if !d.production() => {
+            Err("only an earlier production deployment can be rolled back to; P promotes a preview".into())
+        }
+        Action::Rollback if current(w, d).is_some_and(|c| c.created < d.created) => {
+            Err("it's newer than production: P promotes it".into())
+        }
+        Action::Promote | Action::Rollback if w.project_of(d).is_none() => {
+            Err("ooze doesn't know its project yet".into())
+        }
         _ => Ok(()),
     }
 }
@@ -121,8 +129,12 @@ pub fn run(api: &Api, action: Action, d: &Deployment, project: &str) -> Result<S
             let url = n.url.map(|u| format!(": {u}")).unwrap_or_default();
             format!("redeployed {commit} to {env}{url}")
         }),
-        Action::Promote => vercel::promote(api, project, &d.uid).map(|_| format!("promoted {} to production", short(&d.uid))),
-        Action::Rollback => vercel::rollback(api, project, &d.uid).map(|_| format!("rolled production back to {}", short(&d.uid))),
+        Action::Promote => {
+            vercel::promote(api, project, &d.uid).map(|_| format!("promoted {} to production", short(&d.uid)))
+        }
+        Action::Rollback => {
+            vercel::rollback(api, project, &d.uid).map(|_| format!("rolled production back to {}", short(&d.uid)))
+        }
     };
     said.map_err(|e| format!("couldn't {} {}: {e}", action.verb(), short(&d.uid)))
 }
@@ -131,8 +143,8 @@ pub fn run(api: &Api, action: Action, d: &Deployment, project: &str) -> Result<S
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::model::tests::{NOW, deployment};
     use crate::model::Msg;
+    use crate::model::tests::{NOW, deployment};
     use serde_json::json;
 
     /// moth-radio with a build running, one live, an older one and a preview;
@@ -159,7 +171,10 @@ mod tests {
         let w = world("live");
         let d = |uid: &str| w.find(uid).unwrap().clone();
         assert!(check(Action::Cancel, &d("new"), &w).is_ok());
-        assert_eq!(check(Action::Cancel, &d("live"), &w), Err("only a build that's queued or running can be canceled".into()));
+        assert_eq!(
+            check(Action::Cancel, &d("live"), &w),
+            Err("only a build that's queued or running can be canceled".into())
+        );
         assert_eq!(check(Action::Redeploy, &d("new"), &w), Err("it's still building".into()));
         assert!(check(Action::Rollback, &d("old"), &w).is_ok());
         assert_eq!(check(Action::Rollback, &d("live"), &w), Err("it's already serving production".into()));
@@ -167,7 +182,10 @@ mod tests {
         assert!(check(Action::Promote, &d("pre"), &w).is_ok());
         assert_eq!(check(Action::Promote, &d("new"), &w), Err("it isn't ready".into()));
         let rolled_back = world("old");
-        assert_eq!(check(Action::Rollback, &rolled_back.find("live").unwrap().clone(), &rolled_back), Err("it's newer than production: P promotes it".into()));
+        assert_eq!(
+            check(Action::Rollback, &rolled_back.find("live").unwrap().clone(), &rolled_back),
+            Err("it's newer than production: P promotes it".into())
+        );
     }
 
     #[test]
@@ -183,7 +201,10 @@ mod tests {
 
     #[test]
     fn doing_it_calls_vercel_and_says_what_happened() {
-        let f = crate::api::tests::fake(vec![(201, vec![], String::new()), (403, vec![], r#"{"error":{"message":"You don't have permission"}}"#.into())]);
+        let f = crate::api::tests::fake(vec![
+            (201, vec![], String::new()),
+            (403, vec![], r#"{"error":{"message":"You don't have permission"}}"#.into()),
+        ]);
         let api = crate::api::tests::api(&f.base);
         let w = world("live");
         let old = w.find("old").unwrap().clone();
